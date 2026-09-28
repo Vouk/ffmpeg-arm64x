@@ -278,7 +278,7 @@ jobs:
           Write-Host "FFmpeg-Quelle bereit: $ffmpegSrc"
 
       # ---------------------------------------------------------------------
-      #  6. Header-Preflight (R5.5) + externe Codec-Quellen (dav1d/x264/x265):
+      #  6. Header-Preflight (R5.5) + externe Codec-Quellen (x264/x265):
       #     Die Header (AMF + nv-codec-headers) und die externen Codec-Quellen
       #     werden bezogen. Die eigentliche Preflight-Pruefung auf Vorhandensein
       #     der Header (R5.5) und der Codec-Quellen (R6.4) uebernimmt
@@ -301,40 +301,37 @@ jobs:
           Clone-Repo 'https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git' (Join-Path $env:SRC_DIR 'AMF')
           Clone-Repo 'https://github.com/FFmpeg/nv-codec-headers.git' (Join-Path $env:SRC_DIR 'nv-codec-headers')
 
-          # Externe Codec-Quellen: dav1d (beide Varianten), x264 + x265 (nur GPL).
-          Clone-Repo 'https://code.videolan.org/videolan/dav1d.git' (Join-Path $env:SRC_DIR 'dav1d')
+          # Externe Codec-Quellen: x264 + x265 (nur GPL).
           Clone-Repo 'https://code.videolan.org/videolan/x264.git' (Join-Path $env:SRC_DIR 'x264')
           Clone-Repo 'https://bitbucket.org/multicoreware/x265_git.git' (Join-Path $env:SRC_DIR 'x265')
 
           Write-Host "Header und externe Codec-Quellen bereit unter $env:SRC_DIR."
 
       # ---------------------------------------------------------------------
-      #  7. Externe Libs bauen (R5.5/R6.1/R6.2/R6.3/R6.4): dav1d/x264/x265 je
+      #  7. Externe Libs bauen (R5.5/R6.1/R6.2/R6.3/R6.4): x264/x265 je
       #     arm64 + arm64ec. build-deps.ps1 fuehrt zuerst den Header-Preflight
       #     (R5.5) und den Codec-Quell-Preflight (R6.4) durch -- fehlt ein
       #     Header oder eine Lib, Abbruch mit Benennung, keine Teil-Artefakte.
-      #     Fuer GPL werden dav1d+x264+x265 gebaut, fuer LGPL nur dav1d.
+      #     Fuer GPL werden x264+x265 gebaut, fuer LGPL nur.
       #     Der Build laeuft in der %VCVARS%-Umgebung (MSVC-Cross-Tools).
       # ---------------------------------------------------------------------
-      - name: Build external libraries (dav1d / x264 / x265)
+      - name: Build external libraries (x264 / x265)
         shell: cmd
         run: |
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
-          rem GPL-Variante: dav1d + x264 + x265 (R6.1/R6.2/R6.3), je arm64 + arm64ec.
+          rem GPL-Variante: x264 + x265 (R6.1/R6.2/R6.3), je arm64 + arm64ec.
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-deps.ps1" ^
             -Variant gpl ^
-            -Dav1dSourceDir "%SRC_DIR%\dav1d" ^
             -X264SourceDir "%SRC_DIR%\x264" ^
             -X265SourceDir "%SRC_DIR%\x265" ^
             -OutputDir "%OUT_DIR%\deps\gpl" ^
             -AmfHeaderPath "%AMF_HEADERS%" ^
             -NvCodecHeaderPath "%NVCODEC_HEADERS%"
           if errorlevel 1 exit /b 1
-          rem LGPL-Variante: nur dav1d (x264/x265 sind ausschliesslich GPL, R6.5).
+          rem LGPL-Variante: nur (x264/x265 sind ausschliesslich GPL, R6.5).
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-deps.ps1" ^
             -Variant lgpl ^
-            -Dav1dSourceDir "%SRC_DIR%\dav1d" ^
             -OutputDir "%OUT_DIR%\deps\lgpl" ^
             -AmfHeaderPath "%AMF_HEADERS%" ^
             -NvCodecHeaderPath "%NVCODEC_HEADERS%"
@@ -421,8 +418,8 @@ jobs:
       # ---------------------------------------------------------------------
       # 12. Faehigkeitspruefung (R5.1-R5.4/R6.1-R6.3/R6.5): je Variante die von
       #     ffmpeg.exe gemeldeten Encoder/Decoder/Hardware-Faehigkeiten pruefen.
-      #     GPL listet libx264/libx265 + dav1d/AV1; LGPL NICHT x264/x265, aber
-      #     dav1d/AV1; beide AMF + NVENC/NVDEC.
+      #     GPL listet libx264/libx265; LGPL NICHT x264/x265, aber
+      #     ; beide AMF + NVENC/NVDEC.
       # ---------------------------------------------------------------------
       - name: Verify FFmpeg capabilities (GPL + LGPL)
         run: |
