@@ -241,7 +241,8 @@ jobs:
           # Quelle beziehen und in $SRC_DIR\ffmpeg entpacken.
           New-Item -ItemType Directory -Force -Path $env:SRC_DIR | Out-Null
           $tarball = Join-Path $env:SRC_DIR "ffmpeg-$version.tar.xz"
-          $url = "https://ffmpeg.org/releases/ffmpeg-$version.tar.xz"
+          # $url = "https://ffmpeg.org/releases/ffmpeg-$version.tar.xz"
+          $url = "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n$version.tar.gz"
           Write-Host "Lade FFmpeg-Quelle: $url"
           # Download ueber curl.exe (auf dem Runner vorhanden): folgt Redirects,
           # bricht bei haengender Verbindung ueber Timeouts ab und wiederholt
