@@ -1,0 +1,528 @@
+# =============================================================================
+#  ARM64X-FFmpeg-8-Build (GPL + LGPL) -> zwei MSI-Installer
+#
+#  Dieser Workflow baut FFmpeg 8 als ARM64X-Hybrid-DLLs in zwei Lizenz-Varianten
+#  (GPL und LGPL) und erzeugt daraus genau zwei MSI-Installer. Er laeuft
+#  AUSSCHLIESSLICH manuell (workflow_dispatch) auf einem windows-2022-Runner, der
+#  ueber die amd64->arm64-Cross-Tools (vcvarsamd64_arm64.bat) nach ARM64
+#  cross-kompiliert und die arm64- sowie die arm64ec-Ansicht per
+#  /MACHINE:ARM64X-Link zum Hybrid verschmilzt.
+#
+#  Ein einziger Job, sequenzielle Steps mit Fail-fast. Jeder Step bricht bei
+#  erstem Fehler ab (pwsh: $ErrorActionPreference='Stop'); kein Folgeschritt
+#  laeuft an und kein Artefakt wird bei Teil-Erfolg hochgeladen.
+#
+#  Verdrahtet die vorhandenen Bausteine:
+#    * Reinlogik-Module : scripts/lib/Version.psm1        (Test-FFmpegMajor8)
+#                         scripts/lib/ArtifactCheck.psm1  (Test-MsiCount)
+#    * Build-Skripte    : scripts/build-deps.ps1
+#                         scripts/build-ffmpeg.ps1  (-Variant -Arch)
+#                         scripts/merge-arm64x.ps1
+#                         scripts/verify-arm64x.ps1
+#                         scripts/verify-capabilities.ps1
+#    * Installer        : installer/Product.wxs (candle/light je Variante,
+#                         heat harvest des bin-Ordners -> ComponentGroup
+#                         FfmpegFiles), Lizenz-RTFs unter installer/license.
+#
+#  Requirements: 1.3, 1.4, 2.1, 2.2, 4.1, 4.4, 4.5, 5.5, 6.4,
+#                7.1, 7.2, 7.3, 7.4, 7.5, 7.6
+# =============================================================================
+name: Build FFmpeg 8 (ARM64X, GPL + LGPL)
+
+# -----------------------------------------------------------------------------
+#  Trigger (R7.1/R7.2): AUSSCHLIESSLICH workflow_dispatch. Es gibt bewusst
+#  KEINE push/pull_request/schedule/release-Trigger, damit keine automatischen
+#  Laeufe entstehen.
+# -----------------------------------------------------------------------------
+on:
+  workflow_dispatch:
+    inputs:
+      ffmpegVersion:
+        description: 'FFmpeg-Version (Major-Version MUSS 8 sein), z. B. 8.0'
+        required: true
+        default: '8.0'
+      productVersion:
+        description: 'Anzeigeversion fuer die MSI/Artefaktnamen, z. B. 8.0.0'
+        required: true
+        default: '8.0.0'
+
+permissions:
+  contents: read
+
+env:
+  # Zentrale Ausgabe-/Quellpfade fuer den Lauf.
+  SRC_DIR: ${{ github.workspace }}\src
+  OUT_DIR: ${{ github.workspace }}\out
+  DIST_DIR: ${{ github.workspace }}\dist
+  # Hardware-Encoding-Header (AMF + nv-codec-headers), im Preflight geprueft.
+  AMF_HEADERS: ${{ github.workspace }}\src\AMF\amf\public\include
+  NVCODEC_HEADERS: ${{ github.workspace }}\src\nv-codec-headers\include
+
+jobs:
+  build:
+    # =========================================================================
+    #  Runner / Toolchain (Design: Runner- und Toolchain-Strategie):
+    #  windows-2022 (x64-Host), der nach ARM64 cross-kompiliert. Genau EINE
+    #  Toolchain-Umgebung: vcvarsamd64_arm64.bat. Sie hostet die arm64-Ansicht,
+    #  die arm64ec-Ansicht UND den /MACHINE:ARM64X-Hybrid-Link.
+    # =========================================================================
+    runs-on: windows-2022
+
+    # Fail-fast fuer alle pwsh-Steps: jeder nicht abgefangene Fehler bzw. jeder
+    # von Null verschiedene Exit-Code beendet den Step und damit den Lauf (R7.5).
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      # ---------------------------------------------------------------------
+      #  1. Checkout (R1.3): nur dieses Repo, keine VKDRP-Referenzen.
+      # ---------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------------------
+      #  2. Preflight-Konfigurationspruefung (R1.2/R1.4):
+      #     Vor JEDER Kompilierung pruefen, dass die erforderlichen
+      #     Konfigurationsdateien vorhanden sind:
+      #       * mindestens eine Workflow-Definition
+      #       * mindestens eine Installer-Definition (Product.wxs)
+      #       * mindestens eine Lizenz-Datei (RTF fuer die Installer-UI + die
+      #         Lizenz-Textdateien)
+      #     Fehlt eine, Abbruch mit Benennung der fehlenden Datei -- bevor
+      #     irgendetwas gebaut wird.
+      # ---------------------------------------------------------------------
+      - name: Preflight configuration files
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = '${{ github.workspace }}'
+
+          # Erforderliche Konfigurationsdateien (R1.2). Die Gruppen "Workflow",
+          # "Installer" und "Lizenz" muessen jeweils vorhanden sein.
+          $required = @(
+            @{ Kind = 'Workflow-Definition';  Path = '.github/workflows/build-ffmpeg-arm64x.yml' },
+            @{ Kind = 'Installer-Definition';  Path = 'installer/Product.wxs' },
+            @{ Kind = 'Lizenz-Datei (GPL RTF)';  Path = 'installer/license/gpl-3.0.rtf' },
+            @{ Kind = 'Lizenz-Datei (LGPL RTF)'; Path = 'installer/license/lgpl-3.0.rtf' },
+            @{ Kind = 'Lizenz-Datei (GPL Text)';  Path = 'licenses/LICENSE.GPL.txt' },
+            @{ Kind = 'Lizenz-Datei (LGPL Text)'; Path = 'licenses/LICENSE.LGPL.txt' }
+          )
+
+          $missing = @()
+          foreach ($item in $required) {
+            $full = Join-Path $root $item.Path
+            if (-not (Test-Path -LiteralPath $full)) {
+              $missing += ("{0}: '{1}'" -f $item.Kind, $item.Path)
+            }
+          }
+
+          if ($missing.Count -gt 0) {
+            # R1.4: Abbruch VOR jeder Kompilierung mit Benennung der fehlenden Datei.
+            $named = $missing -join '; '
+            Write-Error "Preflight fehlgeschlagen: fehlende Konfigurationsdatei(en): $named. Der Build wird vor Beginn der Kompilierung abgebrochen (R1.4)."
+          }
+
+          Write-Host "Preflight bestanden: alle erforderlichen Konfigurationsdateien vorhanden."
+
+      # ---------------------------------------------------------------------
+      #  3. Toolchain + SDK verifizieren (Design: Runner-/Toolchain-Strategie):
+      #     * VS 2022 (v143) mit VC.Tools.ARM64, ueber vswhere auf [17.0,18.0)
+      #       gepinnt -> vcvarsamd64_arm64.bat (die EINE Cross-Toolchain).
+      #     * Windows-11-SDK adaptiv (Build >= 22000), keine harte Pinnung.
+      #     Setzt %VCVARS% und %WIN_SDK_VERSION% fuer die folgenden Steps.
+      # ---------------------------------------------------------------------
+      - name: Verify ARM64X toolchain + Windows 11 SDK
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            Write-Error "vswhere.exe nicht gefunden unter $vswhere -- die Visual-Studio-Installation kann nicht aufgeloest werden."
+          }
+
+          # VS 2022 (17.x) mit VC-ARM64-Tools; gepinnt auf [17.0,18.0), damit ein
+          # neueres VS auf dem Image nicht still gewaehlt wird (ARM64X-Link bleibt
+          # gegen v143 validiert).
+          $vsPath = & $vswhere -latest -products * `
+            -version "[17.0,18.0)" `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
+            -property installationPath
+          $vsPath = ($vsPath | Select-Object -First 1)
+          if ([string]::IsNullOrWhiteSpace($vsPath)) {
+            Write-Error "Keine VS-2022-Installation (17.x) mit VC-ARM64-Toolset (v143) gefunden. Die Suche ist auf [17.0,18.0) gepinnt."
+          }
+          Write-Host "Visual Studio: $vsPath"
+
+          # Die EINE Toolchain: amd64->arm64-Cross-Tools. Der native arm64-Host-
+          # Einstieg (vcvarsarm64) wird bewusst NICHT genutzt.
+          $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvarsamd64_arm64.bat'
+          if (-not (Test-Path $vcvars)) {
+            Write-Error "Cross-Toolset-Einstieg nicht gefunden: $vcvars (VC.Tools.ARM64 / v143 amd64_arm64-Cross-Tools fehlen)."
+          }
+
+          # Windows-11-SDK adaptiv waehlen: alle 10.x-SDKs lesen, jene mit
+          # Build-Nummer >= 22000 behalten, die hoechste waehlen (ARM64X setzt
+          # ein Win11-SDK voraus).
+          $sdkBases = @(
+            "${env:ProgramFiles(x86)}\Windows Kits\10\Include",
+            "$env:ProgramFiles\Windows Kits\10\Include"
+          ) | Where-Object { Test-Path $_ }
+
+          $installed = @()
+          foreach ($base in $sdkBases) {
+            $installed += Get-ChildItem -LiteralPath $base -Directory |
+              Where-Object { Test-Path (Join-Path $_.FullName 'um') } |
+              Select-Object -ExpandProperty Name
+          }
+          $installed = @($installed | Sort-Object -Unique)
+
+          $win11Sdks = @()
+          foreach ($name in $installed) {
+            if ($name -match '^\d+\.\d+\.\d+\.\d+$') {
+              $v = [version] $name
+              if ($v.Build -ge 22000) { $win11Sdks += $v }
+            }
+          }
+          if ($win11Sdks.Count -eq 0) {
+            Write-Error "Kein Windows-11-SDK (Build >= 22000) installiert -- ARM64X-Ausgabe setzt eines voraus. Installierte 10.x-SDKs: $($installed -join ', ')."
+          }
+          $sdkVersion = (@($win11Sdks | Sort-Object -Descending)[0]).ToString()
+
+          "VCVARS=$vcvars"              | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WIN_SDK_VERSION=$sdkVersion" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "VCVARS          = $vcvars"
+          Write-Host "WIN_SDK_VERSION = $sdkVersion (installierte 10.x-SDKs: $($installed -join ', '))"
+
+      # ---------------------------------------------------------------------
+      #  4. MSYS2 einrichten (Design: Runner-/Toolchain-Strategie):
+      #     liefert bash/make/pkg-config/nasm/yasm/meson/ninja. Der
+      #     MSVC-Compiler kommt aus %VCVARS%; MSYS2 wird mit
+      #     MSYS2_PATH_TYPE=inherit gestartet, damit INCLUDE/LIB/PATH
+      #     durchgereicht werden. path-type: inherit stellt dies sicher.
+      # ---------------------------------------------------------------------
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            base-devel
+            make
+            pkgconf
+            nasm
+            yasm
+            diffutils
+            mingw-w64-ucrt-x86_64-meson
+            mingw-w64-ucrt-x86_64-ninja
+
+      # ---------------------------------------------------------------------
+      #  5. FFmpeg-Quelle beziehen + Versionspruefung (R2.1/R2.2):
+      #     Die aufgeloeste Version wird ueber Test-FFmpegMajor8 geprueft; ist
+      #     die Major-Version nicht 8, Abbruch mit erwarteter (8) und
+      #     tatsaechlicher Version. Erst danach wird die Quelle entpackt.
+      # ---------------------------------------------------------------------
+      - name: Fetch FFmpeg source + verify version
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ github.event.inputs.ffmpegVersion }}'
+
+          # R2.1/R2.2: Versionspruefung ueber das Reinlogik-Modul. Wirft bei
+          # Major != 8 mit erwarteter (8) und tatsaechlicher Version.
+          Import-Module (Join-Path '${{ github.workspace }}' 'scripts/lib/Version.psm1') -Force
+          $parsed = Test-FFmpegMajor8 -Version $version
+          Write-Host "FFmpeg-Version akzeptiert: $($parsed.Major).$($parsed.Minor).$($parsed.Patch) (Major 8)."
+
+          # Quelle beziehen und in $SRC_DIR\ffmpeg entpacken.
+          New-Item -ItemType Directory -Force -Path $env:SRC_DIR | Out-Null
+          $tarball = Join-Path $env:SRC_DIR "ffmpeg-$version.tar.xz"
+          $url = "https://ffmpeg.org/releases/ffmpeg-$version.tar.xz"
+          Write-Host "Lade FFmpeg-Quelle: $url"
+          Invoke-WebRequest -Uri $url -OutFile $tarball
+
+          $extractRoot = Join-Path $env:SRC_DIR 'ffmpeg-extract'
+          New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+          tar -xf $tarball -C $extractRoot
+          if ($LASTEXITCODE -ne 0) { Write-Error "Entpacken der FFmpeg-Quelle schlug fehl (Exit $LASTEXITCODE)." }
+
+          # Den ausgepackten Quellordner ffmpeg-<version> auf einen stabilen Pfad
+          # $SRC_DIR\ffmpeg abbilden, den die Build-Skripte verwenden.
+          $inner = Get-ChildItem -LiteralPath $extractRoot -Directory | Select-Object -First 1
+          if ($null -eq $inner) { Write-Error "Kein FFmpeg-Quellordner im entpackten Archiv gefunden." }
+          $ffmpegSrc = Join-Path $env:SRC_DIR 'ffmpeg'
+          if (Test-Path -LiteralPath $ffmpegSrc) { Remove-Item -LiteralPath $ffmpegSrc -Recurse -Force }
+          Move-Item -LiteralPath $inner.FullName -Destination $ffmpegSrc
+          if (-not (Test-Path -LiteralPath (Join-Path $ffmpegSrc 'configure'))) {
+            Write-Error "Kein 'configure'-Skript im FFmpeg-Quellbaum: '$ffmpegSrc'."
+          }
+
+          "FFMPEG_SRC=$ffmpegSrc" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "FFmpeg-Quelle bereit: $ffmpegSrc"
+
+      # ---------------------------------------------------------------------
+      #  6. Header-Preflight (R5.5) + externe Codec-Quellen (dav1d/x264/x265):
+      #     Die Header (AMF + nv-codec-headers) und die externen Codec-Quellen
+      #     werden bezogen. Die eigentliche Preflight-Pruefung auf Vorhandensein
+      #     der Header (R5.5) und der Codec-Quellen (R6.4) uebernimmt
+      #     build-deps.ps1 im naechsten Step, VOR jeder Codec-Kompilierung.
+      # ---------------------------------------------------------------------
+      - name: Fetch headers + external codec sources
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path $env:SRC_DIR | Out-Null
+
+          function Clone-Repo {
+            param([string] $Url, [string] $Dest)
+            if (-not (Test-Path -LiteralPath $Dest)) {
+              git clone --depth=1 $Url $Dest
+              if ($LASTEXITCODE -ne 0) { Write-Error "git clone fehlgeschlagen: $Url" }
+            }
+          }
+
+          # Hardware-Encoding-Header (beide Varianten): AMF + nv-codec-headers.
+          Clone-Repo 'https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git' (Join-Path $env:SRC_DIR 'AMF')
+          Clone-Repo 'https://github.com/FFmpeg/nv-codec-headers.git' (Join-Path $env:SRC_DIR 'nv-codec-headers')
+
+          # Externe Codec-Quellen: dav1d (beide Varianten), x264 + x265 (nur GPL).
+          Clone-Repo 'https://code.videolan.org/videolan/dav1d.git' (Join-Path $env:SRC_DIR 'dav1d')
+          Clone-Repo 'https://code.videolan.org/videolan/x264.git' (Join-Path $env:SRC_DIR 'x264')
+          Clone-Repo 'https://bitbucket.org/multicoreware/x265_git.git' (Join-Path $env:SRC_DIR 'x265')
+
+          Write-Host "Header und externe Codec-Quellen bereit unter $env:SRC_DIR."
+
+      # ---------------------------------------------------------------------
+      #  7. Externe Libs bauen (R5.5/R6.1/R6.2/R6.3/R6.4): dav1d/x264/x265 je
+      #     arm64 + arm64ec. build-deps.ps1 fuehrt zuerst den Header-Preflight
+      #     (R5.5) und den Codec-Quell-Preflight (R6.4) durch -- fehlt ein
+      #     Header oder eine Lib, Abbruch mit Benennung, keine Teil-Artefakte.
+      #     Fuer GPL werden dav1d+x264+x265 gebaut, fuer LGPL nur dav1d.
+      #     Der Build laeuft in der %VCVARS%-Umgebung (MSVC-Cross-Tools).
+      # ---------------------------------------------------------------------
+      - name: Build external libraries (dav1d / x264 / x265)
+        shell: cmd
+        run: |
+          call "%VCVARS%"
+          if errorlevel 1 exit /b 1
+          rem GPL-Variante: dav1d + x264 + x265 (R6.1/R6.2/R6.3), je arm64 + arm64ec.
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-deps.ps1" ^
+            -Variant gpl ^
+            -Dav1dSourceDir "%SRC_DIR%\dav1d" ^
+            -X264SourceDir "%SRC_DIR%\x264" ^
+            -X265SourceDir "%SRC_DIR%\x265" ^
+            -OutputDir "%OUT_DIR%\deps\gpl" ^
+            -AmfHeaderPath "%AMF_HEADERS%" ^
+            -NvCodecHeaderPath "%NVCODEC_HEADERS%"
+          if errorlevel 1 exit /b 1
+          rem LGPL-Variante: nur dav1d (x264/x265 sind ausschliesslich GPL, R6.5).
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-deps.ps1" ^
+            -Variant lgpl ^
+            -Dav1dSourceDir "%SRC_DIR%\dav1d" ^
+            -OutputDir "%OUT_DIR%\deps\lgpl" ^
+            -AmfHeaderPath "%AMF_HEADERS%" ^
+            -NvCodecHeaderPath "%NVCODEC_HEADERS%"
+          if errorlevel 1 exit /b 1
+
+      # ---------------------------------------------------------------------
+      #  8. FFmpeg GPL beide Ansichten (R2.3/R4.1/R4.2):
+      #     Zwei configure/make-Durchlaeufe (arm64 + arm64ec) ueber
+      #     build-ffmpeg.ps1. Schlaegt ein Durchlauf fehl, endet der Workflow
+      #     ohne MSI dieser Variante (R4.5). MSYS2 mit MSVC-Toolchain
+      #     (MSYS2_PATH_TYPE=inherit im Skript).
+      # ---------------------------------------------------------------------
+      - name: Build FFmpeg GPL (arm64 + arm64ec)
+        shell: cmd
+        run: |
+          call "%VCVARS%"
+          if errorlevel 1 exit /b 1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-ffmpeg.ps1" ^
+            -Variant gpl -Arch arm64 -SourceDir "%FFMPEG_SRC%" -OutputDir "%OUT_DIR%\ffmpeg"
+          if errorlevel 1 exit /b 1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-ffmpeg.ps1" ^
+            -Variant gpl -Arch arm64ec -SourceDir "%FFMPEG_SRC%" -OutputDir "%OUT_DIR%\ffmpeg"
+          if errorlevel 1 exit /b 1
+
+      # ---------------------------------------------------------------------
+      #  9. FFmpeg LGPL beide Ansichten (R2.3/R4.1/R4.3):
+      #     Wie GPL, jedoch ohne --enable-gpl / x264 / x265 (Get-ConfigureFlags
+      #     im Skript entscheidet variantenabhaengig).
+      # ---------------------------------------------------------------------
+      - name: Build FFmpeg LGPL (arm64 + arm64ec)
+        shell: cmd
+        run: |
+          call "%VCVARS%"
+          if errorlevel 1 exit /b 1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-ffmpeg.ps1" ^
+            -Variant lgpl -Arch arm64 -SourceDir "%FFMPEG_SRC%" -OutputDir "%OUT_DIR%\ffmpeg"
+          if errorlevel 1 exit /b 1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-ffmpeg.ps1" ^
+            -Variant lgpl -Arch arm64ec -SourceDir "%FFMPEG_SRC%" -OutputDir "%OUT_DIR%\ffmpeg"
+          if errorlevel 1 exit /b 1
+
+      # ---------------------------------------------------------------------
+      # 10. ARM64X-Merge (R2.3/R3.2): je Variante die arm64- und arm64ec-Ansicht
+      #     zu ARM64X-Hybriden verschmelzen (link.exe /MACHINE:ARM64X fuer DLLs,
+      #     lib.exe /MACHINE:ARM64X fuer .lib). merge-arm64x.ps1 paart je
+      #     Basisname. Ergebnis je Variante unter out\ffmpeg\<variant>\arm64x\bin.
+      # ---------------------------------------------------------------------
+      - name: Merge ARM64X (GPL + LGPL)
+        shell: cmd
+        run: |
+          call "%VCVARS%"
+          if errorlevel 1 exit /b 1
+          rem GPL: arm64 + arm64ec -> arm64x (bin-Verzeichnisse enthalten DLL + .lib).
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\merge-arm64x.ps1" ^
+            -Arm64Dir "%OUT_DIR%\ffmpeg\gpl\arm64\bin" ^
+            -Arm64ecDir "%OUT_DIR%\ffmpeg\gpl\arm64ec\bin" ^
+            -OutputDir "%OUT_DIR%\ffmpeg\gpl\arm64x\bin"
+          if errorlevel 1 exit /b 1
+          rem LGPL: arm64 + arm64ec -> arm64x.
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\merge-arm64x.ps1" ^
+            -Arm64Dir "%OUT_DIR%\ffmpeg\lgpl\arm64\bin" ^
+            -Arm64ecDir "%OUT_DIR%\ffmpeg\lgpl\arm64ec\bin" ^
+            -OutputDir "%OUT_DIR%\ffmpeg\lgpl\arm64x\bin"
+          if errorlevel 1 exit /b 1
+
+      # ---------------------------------------------------------------------
+      # 11. ARM64X-Verifikation (R2.4/R2.5/R3.3): jede gemergte DLL sowie
+      #     ffmpeg.exe/ffprobe.exe muss den (ARM64X)-Marker an der Maschinenzeile
+      #     zeigen; zu jeder DLL muss eine gleichnamige .lib existieren. Fehlt
+      #     etwas, Abbruch mit Benennung der Datei und der fehlenden Ansicht.
+      # ---------------------------------------------------------------------
+      - name: Verify ARM64X (GPL + LGPL)
+        shell: cmd
+        run: |
+          call "%VCVARS%"
+          if errorlevel 1 exit /b 1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\verify-arm64x.ps1" ^
+            -BinDir "%OUT_DIR%\ffmpeg\gpl\arm64x\bin"
+          if errorlevel 1 exit /b 1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\verify-arm64x.ps1" ^
+            -BinDir "%OUT_DIR%\ffmpeg\lgpl\arm64x\bin"
+          if errorlevel 1 exit /b 1
+
+      # ---------------------------------------------------------------------
+      # 12. Faehigkeitspruefung (R5.1-R5.4/R6.1-R6.3/R6.5): je Variante die von
+      #     ffmpeg.exe gemeldeten Encoder/Decoder/Hardware-Faehigkeiten pruefen.
+      #     GPL listet libx264/libx265 + dav1d/AV1; LGPL NICHT x264/x265, aber
+      #     dav1d/AV1; beide AMF + NVENC/NVDEC.
+      # ---------------------------------------------------------------------
+      - name: Verify FFmpeg capabilities (GPL + LGPL)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "${{ github.workspace }}\scripts\verify-capabilities.ps1" `
+            -FFmpegPath "$env:OUT_DIR\ffmpeg\gpl\arm64x\bin\ffmpeg.exe" -Variant gpl
+          & "${{ github.workspace }}\scripts\verify-capabilities.ps1" `
+            -FFmpegPath "$env:OUT_DIR\ffmpeg\lgpl\arm64x\bin\ffmpeg.exe" -Variant lgpl
+
+      # ---------------------------------------------------------------------
+      # 13. MSI GPL + LGPL (R4.4/R8/R9/R10): je Variante heat harvest des
+      #     bin-Ordners in die ComponentGroup FfmpegFiles, dann candle + light
+      #     mit -dVariant=GPL bzw. -dVariant=LGPL. Ergebnis: zwei MSI in $DIST_DIR.
+      # ---------------------------------------------------------------------
+      - name: Build MSI installers (GPL + LGPL)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path $env:DIST_DIR | Out-Null
+
+          # WiX v3.x auf dem Runner auffindbar machen (heat/candle/light).
+          $wixBin = $env:WIX
+          if ([string]::IsNullOrWhiteSpace($wixBin)) {
+            $wixBin = 'C:\Program Files (x86)\WiX Toolset v3.14\bin'
+          }
+          else {
+            $wixBin = Join-Path $wixBin 'bin'
+          }
+          $heat  = Join-Path $wixBin 'heat.exe'
+          $candle = Join-Path $wixBin 'candle.exe'
+          $light = Join-Path $wixBin 'light.exe'
+          foreach ($tool in @($heat, $candle, $light)) {
+            if (-not (Test-Path -LiteralPath $tool)) {
+              Write-Error "WiX-Werkzeug nicht gefunden: '$tool'. WiX Toolset v3.x wird zum Paketieren benoetigt."
+            }
+          }
+
+          $productVersion = '${{ github.event.inputs.productVersion }}'
+          $installerDir = Join-Path '${{ github.workspace }}' 'installer'
+          $productWxs = Join-Path $installerDir 'Product.wxs'
+
+          function Build-Msi {
+            param(
+              [string] $Variant,     # 'GPL' | 'LGPL'
+              [string] $BinSourceDir,
+              [string] $OutMsi
+            )
+            $work = Join-Path $env:OUT_DIR ("wix\" + $Variant)
+            New-Item -ItemType Directory -Force -Path $work | Out-Null
+            $ffmpegFilesWxs = Join-Path $work 'FfmpegFiles.wxs'
+
+            # heat: alle Dateien des bin-Ordners in die ComponentGroup FfmpegFiles
+            # mit Zielverzeichnis BINDIR harvesten (var.BinSourceDir).
+            & $heat dir $BinSourceDir -cg FfmpegFiles -dr BINDIR -srd -sfrag `
+              -var var.BinSourceDir -gg -scom -sreg -out $ffmpegFilesWxs
+            if ($LASTEXITCODE -ne 0) { Write-Error "heat (Variante $Variant) schlug fehl (Exit $LASTEXITCODE)." }
+
+            # candle: Product.wxs + FfmpegFiles.wxs mit Varianten-Weiche kompilieren.
+            & $candle -arch x64 `
+              "-dVariant=$Variant" `
+              "-dProductVersion=$productVersion" `
+              "-dBinSourceDir=$BinSourceDir" `
+              -ext WixUtilExtension `
+              -out ($work + '\') `
+              $productWxs $ffmpegFilesWxs
+            if ($LASTEXITCODE -ne 0) { Write-Error "candle (Variante $Variant) schlug fehl (Exit $LASTEXITCODE)." }
+
+            # light: MSI linken; Lizenzseite ueber WixUIExtension.
+            & $light `
+              (Join-Path $work 'Product.wixobj') `
+              (Join-Path $work 'FfmpegFiles.wixobj') `
+              -ext WixUIExtension -ext WixUtilExtension `
+              -b $installerDir `
+              -o $OutMsi
+            if ($LASTEXITCODE -ne 0) { Write-Error "light (Variante $Variant) schlug fehl (Exit $LASTEXITCODE)." }
+
+            if (-not (Test-Path -LiteralPath $OutMsi)) {
+              Write-Error "MSI (Variante $Variant) wurde nicht erzeugt: '$OutMsi'."
+            }
+            Write-Host "MSI erzeugt: $OutMsi"
+          }
+
+          Build-Msi -Variant GPL `
+            -BinSourceDir "$env:OUT_DIR\ffmpeg\gpl\arm64x\bin" `
+            -OutMsi (Join-Path $env:DIST_DIR "ffmpeg-$productVersion-gpl-arm64x.msi")
+
+          Build-Msi -Variant LGPL `
+            -BinSourceDir "$env:OUT_DIR\ffmpeg\lgpl\arm64x\bin" `
+            -OutMsi (Join-Path $env:DIST_DIR "ffmpeg-$productVersion-lgpl-arm64x.msi")
+
+      # ---------------------------------------------------------------------
+      # 14. Artefakt-Zaehlung == 2 (R7.6): genau zwei MSI muessen vorliegen.
+      #     Test-MsiCount meldet Erfolg gdw Anzahl == 2; bei Abweichung Abbruch
+      #     mit erwarteter (2) und tatsaechlicher Anzahl.
+      # ---------------------------------------------------------------------
+      - name: Assert exactly two MSI installers
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module (Join-Path '${{ github.workspace }}' 'scripts/lib/ArtifactCheck.psm1') -Force
+
+          $msis = @(Get-ChildItem -LiteralPath $env:DIST_DIR -Filter '*.msi' -File)
+          $result = Test-MsiCount -Count $msis.Count
+          Write-Host $result.Message
+          foreach ($m in $msis) { Write-Host ("  MSI: {0}" -f $m.Name) }
+
+          if (-not $result.Success) {
+            # R7.6: Abbruch mit der Abweichung.
+            Write-Error $result.Message
+          }
+
+      # ---------------------------------------------------------------------
+      # 15. Upload (R7.4): die zwei MSI als Release_Artifact bereitstellen.
+      #     Laeuft nur, wenn alle vorherigen Steps ohne Fehler durchliefen; bei
+      #     Teil-Erfolg wird nichts hochgeladen (Fail-fast, R7.5).
+      # ---------------------------------------------------------------------
+      - name: Upload MSI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-8-arm64x-msi
+          path: ${{ github.workspace }}\dist\*.msi
+          if-no-files-found: error
+          retention-days: 30

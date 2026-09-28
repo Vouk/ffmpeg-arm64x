@@ -1,0 +1,10 @@
+; PathAction.def
+;
+; Exportiert die MSI-Custom-Actions unter unverzierten Namen, damit WiX sie
+; als DllEntry (Binary/CustomAction) einbinden kann. Ohne diese Definition
+; wuerden __stdcall-Namen auf x86 dekoriert (z. B. _PathPrependDeferred@4).
+LIBRARY PathAction
+EXPORTS
+    PathPrependDeferred
+    PathRemoveDeferred
+    PathRollback

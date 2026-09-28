@@ -1,0 +1,3 @@
+# Platzhalter, damit Git dieses Verzeichnis anlegt.
+# Reinlogik-Module (Version.psm1, BuildConfig.psm1, ArtifactCheck.psm1,
+# PathValidation.psm1) folgen in den Tasks 2-4.

@@ -1,0 +1,48 @@
+# Build output
+build/
+build_*/
+out/
+dist/
+artifacts/
+*.msi
+*.wixpdb
+*.wixobj
+
+# FFmpeg / external lib sources & builds
+src/
+_deps/
+ffmpeg-*/
+dav1d-*/
+x264-*/
+x265_*/
+
+# Compiled objects / libraries
+*.obj
+*.o
+*.lib
+*.dll
+*.exe
+*.pdb
+*.exp
+*.ilk
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+
+# PowerShell / test output
+TestResults/
+*.trx
+coverage.xml
+testResults.xml
+
+# IDE / OS
+.vs/
+.idea/
+.vscode/
+*.user
+Thumbs.db
+.DS_Store

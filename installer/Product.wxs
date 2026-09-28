@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Product.wxs — WiX v3.x Produktdefinition fuer den ARM64X-FFmpeg-8-Installer.
+
+  Eine gemeinsame Definition, die per WiX-Praeprozessor-Variable $(var.Variant)
+  (GPL | LGPL) die passende Lizenz-RTF, den ProductName und den UpgradeCode
+  waehlt (Task 11.1 / Requirements R4, R8). Der Installer wird zweimal gebaut —
+  einmal mit -dVariant=GPL, einmal mit -dVariant=LGPL — sodass genau zwei MSI
+  entstehen (R4.4).
+
+  Aufruf (Beispiel, in der CI-Paketierung):
+      candle Product.wxs FfmpegFiles.wxs -dVariant=GPL -dBinSourceDir=<...> -ext WixUtilExtension
+      light  Product.wixobj FfmpegFiles.wixobj -o ffmpeg-8-gpl-arm64x.msi -ext WixUIExtension -ext WixUtilExtension
+
+  Voraussetzungen (Extensions, konsistent mit design.md C4):
+    * WixUIExtension   — liefert WixUI_InstallDir inkl. scrollbarer Lizenzseite
+                         (R8.1/R8.2) mit Zustimmungs-Gate fuer "Weiter" (R8.3).
+    * WixUtilExtension — util:-Namespace (konsistent mit dem VKDRP-Repo).
+
+  Der Namespace 2006/wi kennzeichnet WiX Toolset v3.x.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <!--
+    ==========================================================================
+    Varianten-Weiche (R4, R8): $(var.Variant) MUSS beim candle-Aufruf via
+    -dVariant=GPL bzw. -dVariant=LGPL gesetzt sein. Daraus werden ProductName,
+    UpgradeCode und die anzuzeigende Lizenz-RTF abgeleitet.
+
+    Die UpgradeCodes sind je Variante fest (stabil ueber Versionen hinweg),
+    damit MajorUpgrade dieselbe Variante ersetzt, GPL und LGPL aber als
+    getrennte Produkte nebeneinander verwaltet werden.
+    ==========================================================================
+  -->
+  <?ifndef Variant ?>
+    <?error Die Praeprozessor-Variable 'Variant' muss gesetzt sein: -dVariant=GPL oder -dVariant=LGPL ?>
+  <?endif?>
+
+  <?if $(var.Variant) = GPL ?>
+    <?define ProductName = "FFmpeg 8 (GPL, ARM64X)" ?>
+    <?define UpgradeCode = "6E3B4C2A-1D5F-4A7B-9C10-2F8E6A0B3D41" ?>
+    <?define LicenseRtf  = "license\gpl-3.0.rtf" ?>
+  <?elseif $(var.Variant) = LGPL ?>
+    <?define ProductName = "FFmpeg 8 (LGPL, ARM64X)" ?>
+    <?define UpgradeCode = "9A72F0E5-8B3C-4D61-A0F2-5C7D1E9B4028" ?>
+    <?define LicenseRtf  = "license\lgpl-3.0.rtf" ?>
+  <?else?>
+    <?error Unbekannte Variant '$(var.Variant)'. Erlaubt sind GPL oder LGPL. ?>
+  <?endif?>
+
+  <!--
+    Anzeigeversion der MSI/Artefakte. Von der CI ueberschreibbar via
+    -dProductVersion=8.0.0 (entspricht dem workflow_dispatch-Input
+    'productVersion' aus Task 12). Default hier fuer lokale candle-Syntaxpruefung.
+  -->
+  <?ifndef ProductVersion ?>
+    <?define ProductVersion = "8.0.0" ?>
+  <?endif?>
+
+  <Product Id="*"
+           Name="$(var.ProductName)"
+           Language="1033"
+           Codepage="65001"
+           Version="$(var.ProductVersion)"
+           Manufacturer="ARM64X-FFmpeg-Build"
+           UpgradeCode="$(var.UpgradeCode)">
+
+    <!-- Platform (R-Kontext ARM64X):
+         WiX Toolset v3.11.x kennt im Package/@Platform nur x86|x64|ia64 und
+         candle nur "-arch x86|x64|ia64" — ein arm64-Token wird erst von den
+         neueren WiX-Buildlinien (v3.14 / WiX v4) unterstuetzt.
+         Die INSTALLIERTEN Nutzdaten (FFmpeg-DLLs/-EXEs) sind ARM64X-Hybride;
+         das MSI-PAKET selbst ist reine Verpackung und laeuft auf Windows on ARM
+         nativ (bzw. via x64-Emulation). Wir setzen daher hier Platform="x64",
+         damit ProgramFiles64Folder korrekt nach "C:\Program Files" aufloest
+         (R9.1) und das Paket mit v3.11 baubar bleibt.
+         Verwendet die CI eine WiX-Buildlinie mit ARM64-Unterstuetzung, kann
+         stattdessen candle mit "-arch arm64" (ohne Platform-Attribut) genutzt
+         werden. -->
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Platform="x64"
+             Description="FFmpeg 8 ($(var.Variant)) als ARM64X-Hybrid" />
+
+    <MajorUpgrade DowngradeErrorMessage="Eine neuere Version von $(var.ProductName) ist bereits installiert."
+                  AllowSameVersionUpgrades="yes"
+                  Schedule="afterInstallInitialize" />
+
+    <Media Id="1" Cabinet="contents.cab" EmbedCab="yes" CompressionLevel="high" />
+
+    <!--
+      ======================================================================
+      Installer-Properties (Data Model der MSI, design.md).
+      ======================================================================
+    -->
+
+    <!-- INSTALLDIR-Default (R9.1). Wird von der UI editierbar gemacht. -->
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+
+    <!-- Lizenz-Zustimmung; Gate fuer "Weiter" (R8.3/R8.5). WixUI setzt diese
+         Property beim aktiven Bestaetigen der Lizenz-Radiobuttons auf "1". -->
+    <Property Id="LicenseAccepted" Value="0" />
+
+    <!-- BINPATH = [INSTALLDIR]\bin (R10.1). Als abgeleitete Property gesetzt,
+         damit die PATH-Custom-Action sie ueber CustomActionData erhaelt. -->
+    <SetProperty Id="BINPATH" Value="[INSTALLDIR]bin" After="CostFinalize" Sequence="execute" />
+
+    <!-- Kein Aendern-Eintrag in der Systemsteuerung. -->
+    <Property Id="ARPNOMODIFY" Value="1" Secure="yes" />
+
+    <!--
+      ======================================================================
+      Feature + Verzeichnisbaum. INSTALLDIR-Default C:\Program Files\FFmpeg 8
+      (R9.1); Unterordner bin nimmt alle DLLs und Ausfuehrbaren auf (R3.4).
+      ======================================================================
+    -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <!-- "FFmpeg 8" ergibt zusammen mit ProgramFiles64Folder den Default
+             C:\Program Files\FFmpeg 8 (R9.1). -->
+        <Directory Id="INSTALLDIR" Name="FFmpeg 8">
+          <!-- Alle erzeugten DLLs und .exe landen im bin-Unterordner (R3.4).
+               Dieses Verzeichnis ist der Bin_Path, der an PATH vorangestellt
+               wird (R10.1). -->
+          <Directory Id="BINDIR" Name="bin" />
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="MainFeature"
+             Title="FFmpeg 8 ($(var.Variant))"
+             Level="1"
+             ConfigurableDirectory="INSTALLDIR"
+             Absent="disallow"
+             Description="FFmpeg-8-DLLs, ffmpeg.exe und ffprobe.exe (ARM64X).">
+      <!--
+        Platzhalter-ComponentGroup: Die echten DLL-/EXE-Dateilisten stehen erst
+        zur Build-Zeit fest (sie haengen von der Variante und dem tatsaechlichen
+        Merge-Ergebnis ab). Deshalb wird die Gruppe NICHT hier statisch
+        gepflegt, sondern von der CI-Paketierung erzeugt:
+
+          heat.exe dir <bin-Ausgabeordner> -cg FfmpegFiles -dr BINDIR \
+                   -srd -sfrag -var var.BinSourceDir -gg -out FfmpegFiles.wxs
+
+        heat harvestet alle Dateien des bin-Ordners in die ComponentGroup
+        "FfmpegFiles" mit Zielverzeichnis BINDIR. Die erzeugte FfmpegFiles.wxs
+        wird zusammen mit dieser Product.wxs kompiliert und gelinkt. Der
+        ComponentGroupRef unten bindet sie in das Feature ein (R3.4).
+      -->
+      <ComponentGroupRef Id="FfmpegFiles" />
+
+      <!-- PATH-Verwaltungs-Komponente (Marker fuer Install/Uninstall-Gating
+           der PATH-Custom-Actions; im Fragment unten definiert). -->
+      <ComponentRef Id="PathEnvMarker" />
+    </Feature>
+
+    <!--
+      ======================================================================
+      PATH-Custom-Action (Task 6): Deferred + Rollback (R10).
+
+      Binary: PathAction.dll (aus installer/PathAction, exportiert
+      PathPrependDeferred, PathRemoveDeferred, PathRollback).
+
+      Ablauf (design.md "Error Handling -> PATH-Custom-Action"):
+        * Immediate-Actions berechnen die CustomActionData (Type 51):
+            - SetPrependData : "<BINPATH>"      fuer PathPrependDeferred
+            - SetRollbackData: (leer/Vorwert)   fuer PathRollback
+            - SetRemoveData  : "<BINPATH>"      fuer PathRemoveDeferred
+        * Deferred-Actions laufen im Systemkontext (Impersonate=no), damit sie
+          in HKLM schreiben duerfen; sie pruefen die 2047-Grenze VOR dem
+          Schreiben (R10.5) und schreiben nur bei Erfolg (R10.4).
+        * Rollback wird VOR der zugehoerigen Deferred-Action sequenziert, damit
+          der Installer bei einem Abbruch (z. B. DLL-Schreibfehler durch
+          nicht beschreibbares/volles Ziel) den vorherigen PATH wiederherstellt
+          (R3.5/R9.5/R10.4) — keine Rueckstaende in PATH.
+      ======================================================================
+    -->
+    <Binary Id="PathActionDll" SourceFile="PathAction\PathAction.dll" />
+
+    <!-- Immediate: CustomActionData fuer die deferred Prepend-Action setzen. -->
+    <CustomAction Id="SetPrependData"
+                  Property="PathPrependDeferred"
+                  Value="[BINPATH]"
+                  Execute="immediate" />
+
+    <!-- Immediate: CustomActionData fuer die Rollback-Action. Leer bedeutet
+         "nichts wiederherzustellen" (die DLL laesst PATH dann unveraendert). -->
+    <CustomAction Id="SetRollbackData"
+                  Property="PathRollback"
+                  Value=""
+                  Execute="immediate" />
+
+    <!-- Immediate: CustomActionData fuer die deferred Remove-Action. -->
+    <CustomAction Id="SetRemoveData"
+                  Property="PathRemoveDeferred"
+                  Value="[BINPATH]"
+                  Execute="immediate" />
+
+    <!-- Deferred (System, no-impersonate): Bin_Path an den Anfang stellen (R10.1). -->
+    <CustomAction Id="PathPrependDeferred"
+                  BinaryKey="PathActionDll"
+                  DllEntry="PathPrependDeferred"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <!-- Rollback (System, no-impersonate): PATH-Vorwert wiederherstellen (R10.4). -->
+    <CustomAction Id="PathRollback"
+                  BinaryKey="PathActionDll"
+                  DllEntry="PathRollback"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <!-- Deferred (System, no-impersonate): eigenen Bin_Path-Eintrag entfernen (R10.2). -->
+    <CustomAction Id="PathRemoveDeferred"
+                  BinaryKey="PathActionDll"
+                  DllEntry="PathRemoveDeferred"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <!--
+      ======================================================================
+      Sequenzierung relativ zu InstallFiles.
+
+      Install (NOT Installed):
+        1. SetRollbackData  (immediate)  — Rollback-Nutzlast vorbereiten
+        2. SetPrependData   (immediate)  — Prepend-Nutzlast vorbereiten
+        3. PathRollback     (rollback)   — vor der aendernden Aktion einreihen
+        4. PathPrependDeferred (deferred) — NACH InstallFiles: erst wenn die
+           DLLs erfolgreich geschrieben sind, wird PATH geaendert. Schlaegt
+           InstallFiles fehl (Ziel nicht beschreibbar/voll, R9.5), laeuft die
+           PATH-Aenderung gar nicht erst an; ein spaeterer Fehler triggert das
+           Rollback (R3.5/R10.4).
+
+      Uninstall (REMOVE="ALL"):
+        1. SetRemoveData      (immediate)
+        2. PathRemoveDeferred (deferred, vor RemoveFiles) — Eintrag entfernen (R10.2).
+      ======================================================================
+    -->
+    <InstallExecuteSequence>
+      <!-- BINPATH wird via SetProperty After CostFinalize gesetzt; die
+           Nutzlast-Actions muessen danach laufen (Action-Id == Property-Id). -->
+      <Custom Action="SetRollbackData" After="BINPATH">NOT Installed</Custom>
+      <Custom Action="SetPrependData" After="SetRollbackData">NOT Installed</Custom>
+      <Custom Action="PathRollback" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="PathPrependDeferred" After="PathRollback">NOT Installed</Custom>
+
+      <Custom Action="SetRemoveData" After="BINPATH">REMOVE="ALL"</Custom>
+      <Custom Action="PathRemoveDeferred" Before="RemoveFiles">REMOVE="ALL"</Custom>
+    </InstallExecuteSequence>
+
+    <!--
+      ======================================================================
+      Lizenz-UI (R8). WixUI_InstallDir zeigt die Lizenzseite VOR InstallFiles
+      und laesst "Weiter" erst nach aktiver Zustimmung zu (R8.1/R8.2/R8.3).
+      WixUILicenseRtf waehlt die variantenspezifische RTF; kann die RTF nicht
+      geladen werden, bricht der Installer vor der Dateiinstallation ab (R8.4).
+      ======================================================================
+    -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    <UIRef Id="WixUI_InstallDir" />
+
+  </Product>
+
+  <!--
+    ========================================================================
+    Fragment: PATH-Marker-Komponente.
+
+    Traegt keine Nutzdaten, dient nur als KeyPath-Anker im BINDIR, damit die
+    deferred PATH-Actions verlaesslich an Install (NOT Installed) und
+    Uninstall (REMOVE="ALL") gebunden sind und BINDIR angelegt/entfernt wird.
+    ========================================================================
+  -->
+  <Fragment>
+    <DirectoryRef Id="BINDIR">
+      <Component Id="PathEnvMarker" Guid="C1D2E3F4-5A6B-4C7D-8E9F-0A1B2C3D4E5F">
+        <RegistryValue Root="HKLM"
+                       Key="SOFTWARE\ARM64X-FFmpeg-Build\$(var.Variant)"
+                       Name="Installed"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+        <!-- Sorgt dafuer, dass der leere bin-Ordner bei Deinstallation
+             wieder entfernt wird, wenn keine geharvesteten Dateien mehr da sind. -->
+        <RemoveFolder Id="RemoveBinDir" On="uninstall" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
+</Wix>
