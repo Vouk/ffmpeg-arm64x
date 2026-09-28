@@ -68,6 +68,11 @@ jobs:
     # =========================================================================
     runs-on: windows-2022
 
+    # Sicherheitsnetz: der gesamte Job bricht nach 120 Minuten ab, damit ein
+    # haengender Step (z. B. ein blockierter Download) nicht stundenlang
+    # Runner-Zeit verbraucht.
+    timeout-minutes: 120
+
     # Fail-fast fuer alle pwsh-Steps: jeder nicht abgefangene Fehler bzw. jeder
     # von Null verschiedene Exit-Code beendet den Step und damit den Lauf (R7.5).
     defaults:
@@ -238,7 +243,19 @@ jobs:
           $tarball = Join-Path $env:SRC_DIR "ffmpeg-$version.tar.xz"
           $url = "https://ffmpeg.org/releases/ffmpeg-$version.tar.xz"
           Write-Host "Lade FFmpeg-Quelle: $url"
-          Invoke-WebRequest -Uri $url -OutFile $tarball
+          # Download ueber curl.exe (auf dem Runner vorhanden): folgt Redirects,
+          # bricht bei haengender Verbindung ueber Timeouts ab und wiederholt
+          # transiente Fehler. Invoke-WebRequest wird bewusst NICHT genutzt --
+          # sein Fortschrittsbalken drosselt Downloads in nicht-interaktiven
+          # CI-Konsolen drastisch (Stunden statt Sekunden).
+          & curl.exe --fail --location --show-error --silent `
+            --retry 5 --retry-delay 5 --retry-all-errors `
+            --connect-timeout 30 --max-time 600 `
+            --output $tarball $url
+          if ($LASTEXITCODE -ne 0) { Write-Error "Download der FFmpeg-Quelle schlug fehl (curl Exit $LASTEXITCODE): $url" }
+          if (-not (Test-Path -LiteralPath $tarball) -or ((Get-Item -LiteralPath $tarball).Length -lt 1MB)) {
+            Write-Error "Heruntergeladenes FFmpeg-Archiv fehlt oder ist unplausibel klein: '$tarball'."
+          }
 
           $extractRoot = Join-Path $env:SRC_DIR 'ffmpeg-extract'
           New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
