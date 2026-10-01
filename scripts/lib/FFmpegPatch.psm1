@@ -3,77 +3,236 @@
     Backports fuer den FFmpeg-Quellbaum, die vor configure angewendet werden.
 
 .DESCRIPTION
-    FFmpeg bis einschliesslich n8.1.3 (ebenso release/8.1) deaktiviert in
-    configure ffnvcodec, cuvid, nvdec und nvenc auf aarch64 fuer jedes
-    target_os ausser linux. Mit --target-os=win32 und --enable-nvenc/-nvdec
-    bricht configure deshalb ab mit:
-        ERROR: nvdec requested, but not all dependencies are satisfied: ffnvcodec
+    FFmpeg 8.1.3 (und release/8.1) fehlen zwei Upstream-Fixes, die fuer einen
+    MSVC-Build nach ARM64/ARM64EC noetig sind:
 
-    Upstream hat genau diese Sperre mit Commit 93f653f95c ("configure: enable
-    ffnvcodec, nvenc, nvdec for aarch64 Windows", 2026-06-01) aufgehoben. Der
-    Commit ist in keinem 8.1.x-Tag enthalten; dieses Modul spielt die eine
-    geaenderte Zeile nach. Enthaelt der Quellbaum den Fix bereits (neuere
-    FFmpeg-Version), bleibt configure unveraendert.
+      1. Commit 93f653f95c "configure: enable ffnvcodec, nvenc, nvdec for
+         aarch64 Windows". configure deaktiviert ffnvcodec/cuvid/nvdec/nvenc
+         auf aarch64 fuer jedes target_os ausser linux. Mit --target-os=win32
+         bricht configure sonst ab mit:
+             ERROR: nvdec requested, but not all dependencies are satisfied:
+             ffnvcodec
 
-    Requirements: 5.2, 5.4
+      2. Commit 8512161c81 "configure: Pass the .objs response file to
+         makedef". compat/windows/makedef bekommt alle Objektdateien als
+         Argumente. libavcodec hat ~1000 Objekte, womit die Kommandozeile die
+         Windows-Grenze von 32767 Zeichen reisst; das letzte Argument kommt
+         abgeschnitten an und makedef bricht ab mit:
+             Object does not exist: libavc
+         Der Fix reicht stattdessen die bereits fuer den Link erzeugte
+         .objs-Response-Datei weiter.
+
+    Beide Patches sind idempotent: enthaelt der Quellbaum den Fix schon (z. B.
+    neuere FFmpeg-Version), bleibt die Datei unveraendert. Passt eine
+    Fundstelle weder auf die alte noch auf die neue Form, wird abgebrochen --
+    dann hat sich der Quellbaum geaendert und der Backport muss geprueft werden.
+
+    Hinweis: Der library.mak-Teil ist an 8.1.3 angepasst. Upstream verschiebt
+    dort einen Block, der zusaetzlich HAVE_BUILTIN_FILE kennt; das gibt es in
+    8.1.3 noch nicht.
+
+    Requirements: 5.2, 5.4 (NVENC/NVDEC), 3.1 (Shared Libraries)
 #>
 
 Set-StrictMode -Version Latest
 
-# Kontext der aarch64-Sperre exakt wie in configure (LF-Zeilenenden).
-$script:Arm64NvidiaGateBefore = "elif enabled_any aarch64 ppc64 && ! enabled bigendian; then`n    case `$target_os in`n        linux)`n"
-$script:Arm64NvidiaGateAfter  = "elif enabled_any aarch64 ppc64 && ! enabled bigendian; then`n    case `$target_os in`n        linux|mingw32*|mingw64*|win32|win64)`n"
-
-function Get-PatchedFFmpegConfigure {
+function ConvertFrom-PatchTemplate {
     <#
     .SYNOPSIS
-        Wendet den aarch64-Windows-NVIDIA-Backport auf den Text von configure
-        an (reine Logik, ohne Dateizugriff).
+        Baut aus Zeilen einen Textblock mit LF; <TAB> wird zu einem echten Tab.
+    .DESCRIPTION
+        Tabs sind in Makefiles bedeutungstragend, deshalb werden sie im
+        Patch-Text explizit als <TAB> geschrieben und erst hier ersetzt.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]] $Line
+    )
+
+    return (($Line -join "`n") -replace '<TAB>', "`t")
+}
+
+function Get-FFmpegSourcePatch {
+    <#
+    .SYNOPSIS
+        Liefert die anzuwendenden Patches (Name, Datei, Vorher, Nachher).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param()
+
+    $patches = @()
+
+    # --- 93f653f95c: NVIDIA auf aarch64 Windows freischalten ---------------
+    $patches += [pscustomobject]@{
+        Name   = '93f653f95c: NVIDIA (ffnvcodec/nvenc/nvdec) auf aarch64 Windows'
+        File   = 'configure'
+        Before = ConvertFrom-PatchTemplate @(
+            'elif enabled_any aarch64 ppc64 && ! enabled bigendian; then',
+            '    case $target_os in',
+            '        linux)'
+        )
+        After  = ConvertFrom-PatchTemplate @(
+            'elif enabled_any aarch64 ppc64 && ! enabled bigendian; then',
+            '    case $target_os in',
+            '        linux|mingw32*|mingw64*|win32|win64)'
+        )
+    }
+
+    # --- 8512161c81 (a): makedef nimmt $(SLIB_CREATE_DEF_INPUTS) ----------
+    # Kommt in configure zweimal vor (mingw32- und win32-Zweig).
+    $patches += [pscustomobject]@{
+        Name       = '8512161c81a: SLIB_CREATE_DEF_CMD nutzt Response-Datei'
+        File       = 'configure'
+        Before     = 'makedef $(SUBDIR)lib$(NAME).ver $(OBJS) > $$(@:$(SLIBSUF)=.def)'
+        After      = 'makedef $(SUBDIR)lib$(NAME).ver $(SLIB_CREATE_DEF_INPUTS) > $$(@:$(SLIBSUF)=.def)'
+        Occurrence = 2
+    }
+
+    # --- 8512161c81 (b): SLIB_CREATE_DEF_INPUTS in config.mak schreiben ---
+    # Unquoted Heredoc, daher muessen literale $ als \$ geschrieben werden.
+    $patches += [pscustomobject]@{
+        Name   = '8512161c81b: SLIB_CREATE_DEF_INPUTS in config.mak'
+        File   = 'configure'
+        Before = ConvertFrom-PatchTemplate @(
+            'SLIB_CREATE_DEF_CMD=${SLIB_CREATE_DEF_CMD}',
+            'SLIB_EXTRA_CMD=${SLIB_EXTRA_CMD}'
+        )
+        After  = ConvertFrom-PatchTemplate @(
+            'SLIB_CREATE_DEF_CMD=${SLIB_CREATE_DEF_CMD}',
+            'ifeq (\$(RESPONSE_FILES),yes)',
+            'SLIB_CREATE_DEF_INPUTS=@\$\$@.objs',
+            'else',
+            'SLIB_CREATE_DEF_INPUTS=\$(OBJS)',
+            'endif',
+            'SLIB_EXTRA_CMD=${SLIB_EXTRA_CMD}'
+        )
+    }
+
+    # --- 8512161c81 (c): makedef toleriert ein @response-Argument ---------
+    $patches += [pscustomobject]@{
+        Name   = '8512161c81c: makedef akzeptiert @response-Datei'
+        File   = 'compat/windows/makedef'
+        Before = ConvertFrom-PatchTemplate @(
+            'for object in "$@"; do',
+            '    if [ ! -f "$object" ]; then'
+        )
+        After  = ConvertFrom-PatchTemplate @(
+            'for object in "$@"; do',
+            '    case "$object" in',
+            '    @*)',
+            '        object="${object#@}"',
+            '        ;;',
+            '    esac',
+            '    if [ ! -f "$object" ]; then'
+        )
+    }
+
+    # --- 8512161c81 (d): .objs vor dem .def-Schritt erzeugen --------------
+    # In 8.1.3 steht SLIB_CREATE_DEF_CMD vor dem ifeq-Block, der die
+    # .objs-Datei schreibt. makedef braucht sie aber schon.
+    $patches += [pscustomobject]@{
+        Name   = '8512161c81d: .objs vor SLIB_CREATE_DEF_CMD erzeugen'
+        File   = 'ffbuild/library.mak'
+        Before = ConvertFrom-PatchTemplate @(
+            '<TAB>$(SLIB_CREATE_DEF_CMD)',
+            'ifeq ($(RESPONSE_FILES),yes)',
+            '<TAB>$(Q)echo $$(filter %.o,$$^) > $$@.objs',
+            '<TAB>$$(call LINK,$$(call $(NAME)LINK_SO_ARGS) $$(LD_O) @$$@.objs $$(call $(NAME)LINK_EXTRA))'
+        )
+        After  = ConvertFrom-PatchTemplate @(
+            'ifeq ($(RESPONSE_FILES),yes)',
+            '<TAB>$(Q)echo $$(filter %.o,$$^) > $$@.objs',
+            'endif',
+            '<TAB>$(SLIB_CREATE_DEF_CMD)',
+            'ifeq ($(RESPONSE_FILES),yes)',
+            '<TAB>$$(call LINK,$$(call $(NAME)LINK_SO_ARGS) $$(LD_O) @$$@.objs $$(call $(NAME)LINK_EXTRA))'
+        )
+    }
+
+    return [pscustomobject[]] $patches
+}
+
+function Get-PatchedText {
+    <#
+    .SYNOPSIS
+        Wendet einen Patch auf einen Text an (reine Logik, ohne Dateizugriff).
     .OUTPUTS
-        [pscustomobject] mit Status ("Patched" oder "AlreadyPatched") und Text.
-        Wirft, wenn die Stelle weder in alter noch in neuer Form vorkommt.
+        [pscustomobject] mit Status ("Patched" / "AlreadyPatched") und Text.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
-        [Parameter(Mandatory)]
-        [AllowEmptyString()]
-        [string] $Text
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Text,
+        [Parameter(Mandatory)] [string] $Before,
+        [Parameter(Mandatory)] [string] $After,
+        [Parameter(Mandatory)] [string] $Name,
+        [int] $Occurrence = 1
     )
 
-    $before = [regex]::Matches($Text, [regex]::Escape($script:Arm64NvidiaGateBefore)).Count
-    if ($before -eq 1) {
+    $found = [regex]::Matches($Text, [regex]::Escape($Before)).Count
+    if ($found -eq $Occurrence) {
         return [pscustomobject]@{
-            Status = "Patched"
-            Text   = $Text.Replace($script:Arm64NvidiaGateBefore, $script:Arm64NvidiaGateAfter)
+            Status = 'Patched'
+            Text   = $Text.Replace($Before, $After)
         }
     }
-    if ($before -eq 0 -and $Text.Contains($script:Arm64NvidiaGateAfter)) {
-        return [pscustomobject]@{ Status = "AlreadyPatched"; Text = $Text }
+
+    $already = [regex]::Matches($Text, [regex]::Escape($After)).Count
+    if ($found -eq 0 -and $already -ge $Occurrence) {
+        return [pscustomobject]@{ Status = 'AlreadyPatched'; Text = $Text }
     }
-    throw ("FFmpeg-configure: aarch64-NVIDIA-Sperre nicht eindeutig gefunden " +
-           "(Treffer alte Form: $before). configure hat sich geaendert; " +
-           "Backport von Commit 93f653f95c pruefen.")
+
+    throw ("FFmpeg-Backport '$Name': Fundstelle nicht eindeutig " +
+           "(alte Form: $found, erwartet: $Occurrence; neue Form: $already). " +
+           'Der FFmpeg-Quellbaum hat sich geaendert; Backport pruefen.')
 }
 
-function Invoke-FFmpegConfigurePatch {
+function Invoke-FFmpegSourcePatches {
     <#
     .SYNOPSIS
-        Wendet Get-PatchedFFmpegConfigure auf <SourceDir>/configure an und
-        schreibt die Datei nur bei Aenderung zurueck (LF bleibt, kein BOM).
+        Wendet alle Backports auf den FFmpeg-Quellbaum an.
+    .DESCRIPTION
+        Schreibt eine Datei nur, wenn sich ihr Inhalt aendert. Zeilenenden
+        bleiben LF, es wird kein BOM geschrieben (die Dateien sind
+        Shell-Skripte bzw. Makefiles).
     .OUTPUTS
-        [string] "Patched" oder "AlreadyPatched".
+        [pscustomobject[]] je Patch mit Name, File und Status.
     #>
     [CmdletBinding()]
-    [OutputType([string])]
+    [OutputType([pscustomobject[]])]
     param([Parameter(Mandatory)] [string] $SourceDir)
 
-    $path = Join-Path $SourceDir "configure"
-    $result = Get-PatchedFFmpegConfigure -Text ([System.IO.File]::ReadAllText($path))
-    if ($result.Status -eq "Patched") {
-        [System.IO.File]::WriteAllText($path, $result.Text, (New-Object System.Text.UTF8Encoding($false)))
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $results = @()
+
+    foreach ($patch in (Get-FFmpegSourcePatch)) {
+        $path = Join-Path $SourceDir $patch.File
+        if (-not (Test-Path -LiteralPath $path)) {
+            throw "FFmpeg-Backport '$($patch.Name)': Datei fehlt: '$path'."
+        }
+
+        $occurrence = if ($patch.PSObject.Properties.Name -contains 'Occurrence') { $patch.Occurrence } else { 1 }
+        $original = [System.IO.File]::ReadAllText($path)
+        $result = Get-PatchedText -Text $original -Before $patch.Before `
+            -After $patch.After -Name $patch.Name -Occurrence $occurrence
+
+        if ($result.Status -eq 'Patched') {
+            [System.IO.File]::WriteAllText($path, $result.Text, $utf8NoBom)
+        }
+
+        $results += [pscustomobject]@{
+            Name   = $patch.Name
+            File   = $patch.File
+            Status = $result.Status
+        }
     }
-    return $result.Status
+
+    return [pscustomobject[]] $results
 }
 
-Export-ModuleMember -Function Get-PatchedFFmpegConfigure, Invoke-FFmpegConfigurePatch
+Export-ModuleMember -Function ConvertFrom-PatchTemplate, Get-FFmpegSourcePatch, Get-PatchedText, Invoke-FFmpegSourcePatches

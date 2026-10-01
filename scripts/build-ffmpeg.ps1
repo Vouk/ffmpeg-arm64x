@@ -333,11 +333,14 @@ if (-not (Test-Path -LiteralPath $Msys2Bash)) {
     throw "MSYS2-bash nicht gefunden: '$Msys2Bash'. Pfad über -Msys2Bash setzen."
 }
 
-# Backport: FFmpeg <= 8.1.3 sperrt NVENC/NVDEC auf aarch64 Windows in
-# configure. Idempotent; enthaelt die Quelle den Fix bereits, bleibt sie
-# unveraendert (siehe scripts/lib/FFmpegPatch.psm1).
-$patchStatus = Invoke-FFmpegConfigurePatch -SourceDir $SourceDir
-Write-Host "configure-Backport (NVIDIA aarch64 Windows): $patchStatus"
+# Backports auf den FFmpeg-Quellbaum (siehe scripts/lib/FFmpegPatch.psm1):
+#   * NVENC/NVDEC auf aarch64 Windows freischalten (93f653f95c)
+#   * makedef die .objs-Response-Datei reichen (8512161c81) -- ohne das
+#     reisst libavcodec mit ~1000 Objekten die Kommandozeilen-Grenze.
+# Idempotent: enthaelt die Quelle einen Fix bereits, bleibt sie unveraendert.
+foreach ($patch in (Invoke-FFmpegSourcePatches -SourceDir $SourceDir)) {
+    Write-Host ("FFmpeg-Backport [{0}] {1}: {2}" -f $patch.File, $patch.Name, $patch.Status)
+}
 
 # Ausgabe-Prefix vorbereiten.
 New-Item -ItemType Directory -Force -Path $plan.Prefix | Out-Null
