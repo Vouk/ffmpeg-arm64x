@@ -374,15 +374,21 @@ foreach ($exe in @('ffmpeg.exe', 'ffprobe.exe')) {
     }
 }
 
-# ARM64X-Vorbereitung: FFmpeg installiert .dll und .lib, aber NICHT die je
-# Shared-Lib erzeugte .def (sie bleibt im Quellbaum unter lib<name>/).
-# Der ARM64X-Forwarder (merge-arm64x.ps1) braucht die Export-Liste beider
-# Ansichten, daher die .def nach <prefix>/lib/<dll-basename>.def kopieren.
+# ARM64X-Vorbereitung: FFmpegs make install installiert nur die DLLs (und
+# Header), NICHT die je Shared-Lib erzeugte Import-.lib und .def. Beide
+# bleiben im Quellbaum unter lib<name>/. Der ARM64X-Forwarder
+# (merge-arm64x.ps1) braucht beides: die .def (Export-Liste) und die
+# Import-.lib. Also aus dem Quellbaum nach <prefix>/lib/ kopieren.
+#   DLL/.def: versioniert (avcodec-62.dll / avcodec-62.def)
+#   .lib    : UNversioniert (avcodec.lib) -- Trailing -<zahl> entfernen.
 $libOut = Join-Path $plan.Prefix 'lib'
 New-Item -ItemType Directory -Force -Path $libOut | Out-Null
 $dllBases = Get-ChildItem -LiteralPath $binDir -Filter '*.dll' -File | ForEach-Object { $_.BaseName }
 $defCount = 0
+$libCount = 0
 foreach ($base in $dllBases) {
+    $libStem = $base -replace '-\d+$', ''
+
     $defSrc = Get-ChildItem -LiteralPath $SourceDir -Recurse -Filter "$base.def" -File -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($defSrc) {
         Copy-Item -LiteralPath $defSrc.FullName -Destination (Join-Path $libOut "$base.def") -Force
@@ -390,8 +396,16 @@ foreach ($base in $dllBases) {
     } else {
         Write-Host "WARN: keine .def fuer $base.dll im Quellbaum gefunden."
     }
+
+    $libSrc = Get-ChildItem -LiteralPath $SourceDir -Recurse -Filter "$libStem.lib" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($libSrc) {
+        Copy-Item -LiteralPath $libSrc.FullName -Destination (Join-Path $libOut "$libStem.lib") -Force
+        $libCount++
+    } else {
+        Write-Host "WARN: keine Import-Lib ($libStem.lib) fuer $base.dll im Quellbaum gefunden."
+    }
 }
-Write-Host "ARM64X-Vorbereitung: $defCount .def-Datei(en) nach $libOut kopiert."
+Write-Host "ARM64X-Vorbereitung: $defCount .def- und $libCount .lib-Datei(en) nach $libOut kopiert."
 
 Write-Host "FFmpeg-Build abgeschlossen: $($plan.Prefix)"
 return $plan
