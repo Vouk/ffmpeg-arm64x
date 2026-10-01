@@ -147,10 +147,21 @@ Describe "Invoke-FFmpegSourcePatches" {
         $root = New-FFmpegTree
         Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
         $t = [System.IO.File]::ReadAllText((Join-Path $root "ffbuild/library.mak"))
-        $t.IndexOf('> $$@.objs') | Should -BeLessThan $t.IndexOf('$(SLIB_CREATE_DEF_CMD)')
+        $t.IndexOf('.objs') | Should -BeLessThan $t.IndexOf('$(SLIB_CREATE_DEF_CMD)')
         # Tabs in den Rezeptzeilen muessen erhalten bleiben.
         $t | Should -Match ([regex]::Escape("$($script:TAB)`$(SLIB_CREATE_DEF_CMD)"))
-        $t | Should -Match ([regex]::Escape("$($script:TAB)`$(Q)echo"))
+    }
+
+    It "schreibt .objs mit make-eigenem `$(file), nicht per echo-Umleitung" {
+        # Mit ~1000 Objekten reisst echo plus Umleitung die Kommandozeilen-
+        # Grenze; `$(file ...) schreibt ohne Shell.
+        $root = New-FFmpegTree
+        Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
+        $t = [System.IO.File]::ReadAllText((Join-Path $root "ffbuild/library.mak"))
+        $t | Should -Match ([regex]::Escape('$$(file >$$@.objs,$$(filter %.o,$$^))'))
+        $t | Should -Match ([regex]::Escape('ifneq (,$(filter file,$(.FEATURES)))'))
+        # Der $(file)-Zweig muss vor dem echo-Fallback stehen.
+        $t.IndexOf('$$(file >') | Should -BeLessThan $t.IndexOf('echo $$(filter')
     }
 
     It "bricht ab, wenn eine Datei fehlt" {

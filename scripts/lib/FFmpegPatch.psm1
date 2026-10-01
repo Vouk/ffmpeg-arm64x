@@ -133,10 +133,21 @@ function Get-FFmpegSourcePatch {
     }
 
     # --- 8512161c81 (d): .objs vor dem .def-Schritt erzeugen --------------
-    # In 8.1.3 steht SLIB_CREATE_DEF_CMD vor dem ifeq-Block, der die
-    # .objs-Datei schreibt. makedef braucht sie aber schon.
+    # Zwei Aenderungen:
+    #  1. In 8.1.3 steht SLIB_CREATE_DEF_CMD vor dem ifeq-Block, der die
+    #     .objs-Datei schreibt. makedef braucht sie aber schon.
+    #  2. Die Datei darf nicht per echo plus Umleitung entstehen: make gibt
+    #     die Rezeptzeile an sh, und mit ~1000 Objekten (~35 kB) reisst
+    #     schon dieser Aufruf die 32767-Zeichen-Grenze. Die Umleitung am
+    #     Zeilenende fiel dabei weg, echo schrieb die Liste nach stdout und
+    #     die .objs-Datei entstand nie. GNU makes eingebaute Funktion
+    #     $(file ...) schreibt ohne Shell und kennt die Grenze nicht.
+    #     Upstream guckt dafuer auf HAVE_BUILTIN_FILE (configure-Pruefung,
+    #     die 8.1.3 nicht hat); wir pruefen .FEATURES, was dieselbe
+    #     Faehigkeit meldet und ohne configure-Aenderung auskommt
+    #     (GNU make >= 4.0).
     $patches += [pscustomobject]@{
-        Name   = '8512161c81d: .objs vor SLIB_CREATE_DEF_CMD erzeugen'
+        Name   = '8512161c81d: .objs via $(file) vor SLIB_CREATE_DEF_CMD'
         File   = 'ffbuild/library.mak'
         Before = ConvertFrom-PatchTemplate @(
             '<TAB>$(SLIB_CREATE_DEF_CMD)',
@@ -146,7 +157,11 @@ function Get-FFmpegSourcePatch {
         )
         After  = ConvertFrom-PatchTemplate @(
             'ifeq ($(RESPONSE_FILES),yes)',
+            'ifneq (,$(filter file,$(.FEATURES)))',
+            '<TAB>$$(file >$$@.objs,$$(filter %.o,$$^))',
+            'else',
             '<TAB>$(Q)echo $$(filter %.o,$$^) > $$@.objs',
+            'endif',
             'endif',
             '<TAB>$(SLIB_CREATE_DEF_CMD)',
             'ifeq ($(RESPONSE_FILES),yes)',
