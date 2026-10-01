@@ -396,13 +396,16 @@ function Invoke-X264Build {
     $srcPosix    = ConvertTo-Msys2Path -Path $Ctx.SourceDir
     $prefixPosix = ConvertTo-Msys2Path -Path $Ctx.OutputDir
 
-    # ARM64-Cross-Kompilierung: ohne --host zielt configure auf den x64-Host
-    # und erzeugt x86_64-Code (vgl. vcpkg #22899). --host zwingt das Ziel auf
-    # ARM64; der Compiler ist das via %VCVARS% gereichte cl.exe. --disable-asm,
-    # da x264-arm64-asm gas/clang voraussetzt (nicht MSVC-armasm).
+    # ARM64-Cross-Kompilierung mit MSVC. ENTSCHEIDEND: CC=cl, damit x264s
+    # configure den ARM64-cl.exe (aus vcvarsamd64_arm64.bat) nutzt und per
+    # _M_ARM64 ARCH=AARCH64 setzt. Ohne CC=cl faellt configure auf MSYS2s
+    # natives x86_64-gcc zurueck und kompiliert x86-SSE-Code (common/x86,
+    # __m128/v4si) -> Build bricht fuer ARM64 ab. --disable-asm: reiner C-Pfad.
+    # ARM64EC-Ansicht: cl mit /arm64EC via --extra-cflags.
     $ecCflag = if ($Ctx.Arch -eq 'arm64ec') { ' --extra-cflags=-arm64EC' } else { '' }
-    $configure = "./configure --prefix='$prefixPosix' --enable-shared --disable-cli " +
-                 "--host=aarch64-w64-mingw32 --disable-asm --enable-pic" + $ecCflag
+    $configure = "CC=cl ./configure --prefix='$prefixPosix' --enable-shared --disable-cli " +
+                 "--host=aarch64-w64-mingw32 --disable-asm" + $ecCflag
+    # cl.exe muss im bash-PATH sichtbar sein (vcvars + MSYS2 PATH-inherit).
     & bash -lc "cd '$srcPosix' && $configure" 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) {
         $cfgLog = Join-Path $Ctx.SourceDir 'config.log'
