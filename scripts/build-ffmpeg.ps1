@@ -233,9 +233,13 @@ function Get-FFmpegBuildPlan {
     $pkgPathLine = if ($pkgConfigDirs.Count -gt 0) {
         "export PKG_CONFIG_PATH='" + ($pkgConfigDirs -join ':') + "'"
     } else { ':' }
+    # Diagnose: zeigt im CI-Log, ob pkg-config x264/x265 findet und warum.
+    # Laeuft nicht-fatal (|| true), damit set -e hier nicht abbricht.
+    $pkgDiag = 'echo PKG_CONFIG_PATH=$PKG_CONFIG_PATH; which pkg-config pkgconf 2>/dev/null || true; for L in x264 x265; do echo -- $L --; pkg-config --exists $L && echo found || echo missing; pkg-config --cflags --libs $L 2>&1 || true; done'
     $bashLines = @(
         'set -euo pipefail'
         $pkgPathLine
+        $pkgDiag
         "cd $quotedSource"
         "./configure $quotedConfigureArgs"
         "make -j$Jobs"
@@ -313,6 +317,14 @@ foreach ($kv in $plan.Env.GetEnumerator()) {
 Write-Host "Baue FFmpeg ($($plan.Variant)/$($plan.Arch)) unter MSYS2 ..."
 & $plan.Msys2Bash '-lc' $plan.BashScript
 if ($LASTEXITCODE -ne 0) {
+    # Bei configure-/Build-Fehler FFmpegs config.log ausgeben -- dort steht
+    # die konkrete Ursache (z. B. warum pkg-config x264 nicht akzeptiert).
+    $ffCfgLog = Join-Path $SourceDir 'ffbuild/config.log'
+    if (Test-Path -LiteralPath $ffCfgLog) {
+        Write-Host '----- FFmpeg ffbuild/config.log (letzte 120 Zeilen) -----'
+        Get-Content -LiteralPath $ffCfgLog -Tail 120 | ForEach-Object { Write-Host $_ }
+        Write-Host '---------------------------------------------------------'
+    }
     throw "FFmpeg-Build fehlgeschlagen ($($plan.Variant)/$($plan.Arch)): bash-Exit-Code $LASTEXITCODE."
 }
 
