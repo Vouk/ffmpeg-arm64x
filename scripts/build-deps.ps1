@@ -401,10 +401,17 @@ function Invoke-X264Build {
     # _M_ARM64 ARCH=AARCH64 setzt. Ohne CC=cl faellt configure auf MSYS2s
     # natives x86_64-gcc zurueck und kompiliert x86-SSE-Code (common/x86,
     # __m128/v4si) -> Build bricht fuer ARM64 ab. --disable-asm: reiner C-Pfad.
-    # ARM64EC-Ansicht: cl mit /arm64EC via --extra-cflags.
-    $ecCflag = if ($Ctx.Arch -eq 'arm64ec') { ' --extra-cflags=-arm64EC' } else { '' }
+    # ARM64EC-Ansicht: cl kompiliert mit /arm64EC, UND der Linker muss mit
+    # /MACHINE:arm64EC gefuettert werden -- sonst lehnt link.exe die EC-Objekte
+    # als "Incompatible object type" ab (LNK1392), weil er sonst nach reinem
+    # ARM64 linkt. Compile- UND Link-Maschine muessen uebereinstimmen.
+    if ($Ctx.Arch -eq 'arm64ec') {
+        $ecFlags = ' --extra-cflags=-arm64EC --extra-ldflags=-MACHINE:arm64EC'
+    } else {
+        $ecFlags = ''
+    }
     $configure = "CC=cl ./configure --prefix='$prefixPosix' --enable-shared --disable-cli " +
-                 "--host=aarch64-w64-mingw32 --disable-asm" + $ecCflag
+                 "--host=aarch64-w64-mingw32 --disable-asm" + $ecFlags
     # cl.exe muss im bash-PATH sichtbar sein (vcvars + MSYS2 PATH-inherit).
     & bash -lc "cd '$srcPosix' && $configure" 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) {
@@ -457,6 +464,13 @@ function Invoke-X265Build {
     if ($cflags) {
         $cmakeArgs += "-DCMAKE_C_FLAGS=$cflags"
         $cmakeArgs += "-DCMAKE_CXX_FLAGS=$cflags"
+        # Link-Maschine muss zur Compile-Maschine passen, sonst LNK1392
+        # (Incompatible object type) wie bei x264. /MACHINE:arm64EC fuer alle
+        # Link-Arten (shared/exe/static-lib).
+        $ldm = '/MACHINE:arm64EC'
+        $cmakeArgs += "-DCMAKE_SHARED_LINKER_FLAGS=$ldm"
+        $cmakeArgs += "-DCMAKE_EXE_LINKER_FLAGS=$ldm"
+        $cmakeArgs += "-DCMAKE_STATIC_LINKER_FLAGS=$ldm"
     }
     & cmake @cmakeArgs 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "x265 cmake configure schlug fehl (Exit $LASTEXITCODE)." }
