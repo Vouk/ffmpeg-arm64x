@@ -362,10 +362,10 @@ jobs:
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-ffmpeg.ps1" ^
-            -Variant gpl -Arch arm64 -SourceDir "%FFMPEG_SRC%" -OutputDir "%OUT_DIR%\ffmpeg"
+            -Variant gpl -Arch arm64 -SourceDir "%FFMPEG_SRC%" -OutputDir "%OUT_DIR%\ffmpeg" -DepsDir "%OUT_DIR%\deps\gpl"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-ffmpeg.ps1" ^
-            -Variant gpl -Arch arm64ec -SourceDir "%FFMPEG_SRC%" -OutputDir "%OUT_DIR%\ffmpeg"
+            -Variant gpl -Arch arm64ec -SourceDir "%FFMPEG_SRC%" -OutputDir "%OUT_DIR%\ffmpeg" -DepsDir "%OUT_DIR%\deps\gpl"
           if errorlevel 1 exit /b 1
 
       # ---------------------------------------------------------------------

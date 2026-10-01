@@ -94,6 +94,12 @@ param(
     [Parameter(Mandatory)]
     [string] $OutputDir,
 
+    # Wurzel der gebauten externen Libs (x264/x265) je Variante,
+    # z. B. <OUT>\deps\gpl mit <codec>\<arch>\{include,lib,lib/pkgconfig}.
+    # Fuer LGPL leer (keine externen Codecs).
+    [Parameter()]
+    [string] $DepsDir,
+
     [Parameter()]
     [string] $Msys2Bash = 'C:\msys64\usr\bin\bash.exe',
 
@@ -174,7 +180,8 @@ function Get-FFmpegBuildPlan {
         [Parameter(Mandatory)][string] $SourceDir,
         [Parameter(Mandatory)][string] $OutputDir,
         [Parameter(Mandatory)][string] $Msys2Bash,
-        [Parameter(Mandatory)][int] $Jobs
+        [Parameter(Mandatory)][int] $Jobs,
+        [string] $DepsDir
     )
 
     $variantKey = $Variant.ToLowerInvariant()
@@ -198,6 +205,24 @@ function Get-FFmpegBuildPlan {
     $configureArgs.Add("--libdir=$prefixPosix/lib")
     $configureArgs.Add("--incdir=$prefixPosix/include")
 
+    # Externe Codecs (nur GPL): FFmpegs configure findet x264/x265
+    # ueber pkg-config. Je Codec include/lib hineinreichen (MSVC-Stil)
+    # und die pkgconfig-Verzeichnisse fuer PKG_CONFIG_PATH sammeln.
+    $pkgConfigDirs = [System.Collections.Generic.List[string]]::new()
+    if ($DepsDir -and (Test-Path -LiteralPath $DepsDir)) {
+        foreach ($codec in @('x264', 'x265')) {
+            $codecRoot = Join-Path (Join-Path $DepsDir $codec) $archKey
+            if (-not (Test-Path -LiteralPath $codecRoot)) { continue }
+            $incPosix = ConvertTo-Msys2Path -Path (Join-Path $codecRoot 'include')
+            $libWin   = Join-Path $codecRoot 'lib'
+            $libPosix = ConvertTo-Msys2Path -Path $libWin
+            $configureArgs.Add("--extra-cflags=-I$incPosix")
+            $configureArgs.Add("--extra-ldflags=-LIBPATH:$libPosix")
+            $pcDir = Join-Path $libWin 'pkgconfig'
+            if (Test-Path -LiteralPath $pcDir) { $pkgConfigDirs.Add((ConvertTo-Msys2Path -Path $pcDir)) }
+        }
+    }
+
     $configureArgsArr = [string[]]$configureArgs.ToArray()
 
     # bash-Skript zusammensetzen: fail-fast (set -euo pipefail), in den
@@ -205,8 +230,12 @@ function Get-FFmpegBuildPlan {
     $quotedConfigureArgs = ($configureArgsArr | ForEach-Object { ConvertTo-BashSingleQuoted $_ }) -join ' '
     $quotedSource = ConvertTo-BashSingleQuoted $sourcePosix
 
+    $pkgPathLine = if ($pkgConfigDirs.Count -gt 0) {
+        "export PKG_CONFIG_PATH='" + ($pkgConfigDirs -join ':') + "'"
+    } else { ':' }
     $bashLines = @(
         'set -euo pipefail'
+        $pkgPathLine
         "cd $quotedSource"
         "./configure $quotedConfigureArgs"
         "make -j$Jobs"
@@ -242,7 +271,8 @@ $plan = Get-FFmpegBuildPlan `
     -SourceDir $SourceDir `
     -OutputDir $OutputDir `
     -Msys2Bash $Msys2Bash `
-    -Jobs $Jobs
+    -Jobs $Jobs `
+    -DepsDir $DepsDir
 
 Write-Verbose "FFmpeg-Build-Plan: Variant=$($plan.Variant) Arch=$($plan.Arch) Prefix=$($plan.Prefix)"
 
