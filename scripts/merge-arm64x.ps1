@@ -16,16 +16,18 @@
 
     Das Ergebnis ist eine kleine ARM64X-DLL ohne eigenen Code. Beim Laden
     leitet Windows jeden Aufruf an die passende echte DLL weiter:
-      * ARM64-Prozess        -> <name>.arm64.dll
-      * x64/ARM64EC-Prozess  -> <name>.arm64ec.dll
+      * ARM64-Prozess        -> <name>_arm64.dll
+      * x64/ARM64EC-Prozess  -> <name>_arm64ec.dll
     (Quelle: learn.microsoft.com "Build Arm64X Files" -> Pure Forwarder.)
 
     Ablauf je Bibliothek (avcodec, avformat, ...):
       1. Die echten DLLs der beiden Ansichten werden unter neuen Namen
-         (<base>.arm64.dll / <base>.arm64ec.dll) ins Ausgabeverzeichnis kopiert.
+         (<base>_arm64.dll / <base>_arm64ec.dll) ins Ausgabeverzeichnis kopiert.
       2. Aus den von FFmpeg erzeugten .def-Dateien beider Ansichten werden
          Forwarder-.defs gebaut: jede Zeile "Sym" wird zu
-         "Sym=<base>.arm64.Sym" bzw. "Sym=<base>.arm64ec.Sym".
+         "Sym=<base>_arm64.Sym" bzw. "Sym=<base>_arm64ec.Sym". Wichtig: der
+         Zielmodulname darf KEINEN Punkt enthalten, sonst teilt der .def-Parser
+         ihn falsch auf -- deshalb Unterstrich statt Punkt.
       3. Zwei leere OBJs werden erzeugt (arm64 + arm64ec).
       4. Der Forwarder <base>.dll wird mit /MACHINE:ARM64X gelinkt.
 
@@ -93,7 +95,8 @@ function ConvertTo-ForwarderDef {
         Forwarder-.def um: "Sym" -> "Sym=$ForwardTo.Sym".
     .DESCRIPTION
         Reine String-Transformation. $ForwardTo ist der Modulname OHNE
-        Erweiterung (z. B. "avcodec-62.arm64"). Kommentare (;), leere Zeilen und
+        Erweiterung und OHNE internen Punkt (z. B. "avcodec-62_arm64").
+        Kommentare (;), leere Zeilen und
         die EXPORTS-Zeile bleiben erhalten; bereits weitergeleitete Zeilen
         (enthalten "=") werden unveraendert uebernommen. Attribute wie
         "@1", "PRIVATE", "DATA" nach dem Symbolnamen werden entfernt, da ein
@@ -165,8 +168,8 @@ function Get-Arm64xForwarderPlan {
         # daher die Trailing-Version "-<zahl>" vom Basisnamen entfernen.
         $libStem = $base -replace '-\d+$', ''
 
-        $realArm64Name   = "$base.arm64.dll"
-        $realArm64ecName = "$base.arm64ec.dll"
+        $realArm64Name   = "${base}_arm64.dll"
+        $realArm64ecName = "${base}_arm64ec.dll"
         $fwds.Add([pscustomobject]@{
             BaseName        = $base
             # Eingaben
@@ -182,8 +185,8 @@ function Get-Arm64xForwarderPlan {
             ForwarderDll    = Join-Path $OutputDir "$base.dll"
             FwdArm64Def     = Join-Path $OutputDir "$base.arm64.fwd.def"
             FwdArm64ecDef   = Join-Path $OutputDir "$base.arm64ec.fwd.def"
-            ForwardToArm64  = "$base.arm64"
-            ForwardToArm64ec= "$base.arm64ec"
+            ForwardToArm64  = "${base}_arm64"
+            ForwardToArm64ec= "${base}_arm64ec"
             EmptyArm64Obj   = Join-Path $OutputDir "$base.empty.arm64.obj"
             EmptyArm64ecObj = Join-Path $OutputDir "$base.empty.arm64ec.obj"
             LinkArgs        = $null  # wird nach .def-Erzeugung gesetzt
@@ -227,7 +230,7 @@ $script:DefaultDllLister = {
     param([string] $Dir)
     if (-not (Test-Path -LiteralPath $Dir)) { throw "Verzeichnis nicht gefunden: '$Dir'." }
     Get-ChildItem -LiteralPath $Dir -Filter '*.dll' -File |
-        Where-Object { $_.Name -notmatch '\.arm64(ec)?\.dll$' } |
+        Where-Object { $_.Name -notmatch '_arm64(ec)?\.dll$' } |
         ForEach-Object { $_.BaseName }
 }
 
@@ -268,7 +271,7 @@ function Invoke-ForwarderBuild {
         [Parameter(Mandatory)][string] $ClExe
     )
 
-    Write-Host "  forwarder -> $($Fwd.BaseName).dll (-> .arm64.dll / .arm64ec.dll)"
+    Write-Host "  forwarder -> $($Fwd.BaseName).dll (-> _arm64.dll / _arm64ec.dll)"
 
     foreach ($pair in @(
         @{ Src = $Fwd.SrcArm64Dll;   Dst = $Fwd.RealArm64Dll },

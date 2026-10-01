@@ -49,30 +49,44 @@ BeforeAll {
 Describe "ConvertTo-ForwarderDef" {
     It "leitet jedes Symbol auf das Zielmodul weiter" {
         $def = "EXPORTS`n    avcodec_open2`n    avcodec_close"
-        $r = ConvertTo-ForwarderDef -DefContent $def -ForwardTo "avcodec-62.arm64"
-        ($r -split "`n") | Should -Contain "    avcodec_open2=avcodec-62.arm64.avcodec_open2"
-        ($r -split "`n") | Should -Contain "    avcodec_close=avcodec-62.arm64.avcodec_close"
+        $r = ConvertTo-ForwarderDef -DefContent $def -ForwardTo "avcodec-62_arm64"
+        ($r -split "`n") | Should -Contain "    avcodec_open2=avcodec-62_arm64.avcodec_open2"
+        ($r -split "`n") | Should -Contain "    avcodec_close=avcodec-62_arm64.avcodec_close"
     }
 
     It "behaelt die EXPORTS-Zeile und Kommentare" {
         $def = "EXPORTS`n    ; hint`n    sym"
-        $r = ConvertTo-ForwarderDef -DefContent $def -ForwardTo "m.arm64"
+        $r = ConvertTo-ForwarderDef -DefContent $def -ForwardTo "m_arm64"
         ($r -split "`n")[0] | Should -Be "EXPORTS"
         $r | Should -Match "; hint"
     }
 
     It "entfernt Ordinale und Attribute nach dem Symbolnamen" {
         $def = "EXPORTS`n    av_malloc @7`n    av_free DATA"
-        $r = ConvertTo-ForwarderDef -DefContent $def -ForwardTo "avutil-60.arm64ec"
-        ($r -split "`n") | Should -Contain "    av_malloc=avutil-60.arm64ec.av_malloc"
-        ($r -split "`n") | Should -Contain "    av_free=avutil-60.arm64ec.av_free"
+        $r = ConvertTo-ForwarderDef -DefContent $def -ForwardTo "avutil-60_arm64ec"
+        ($r -split "`n") | Should -Contain "    av_malloc=avutil-60_arm64ec.av_malloc"
+        ($r -split "`n") | Should -Contain "    av_free=avutil-60_arm64ec.av_free"
         $r | Should -Not -Match "@7"
         $r | Should -Not -Match "DATA"
     }
 
+    It "erzeugt Zielmodulnamen OHNE internen Punkt (ARM64X-.def-Parser-Regression)" {
+        # Ein Punkt im Zielmodulnamen (z. B. avcodec-62.arm64ec) wird vom
+        # .def-Forwarder-Parser falsch aufgeteilt -> LNK2001 "arm64ec.<sym>".
+        # Deshalb MUSS der Zielmodulname mit Unterstrich gebildet werden.
+        $def = "EXPORTS`n    avcodec_open2"
+        $r = ConvertTo-ForwarderDef -DefContent $def -ForwardTo "avcodec-62_arm64ec"
+        $line = ($r -split "`n") | Where-Object { $_ -match "avcodec_open2=" }
+        $target = ($line -split "=", 2)[1].Trim()
+        # Modulteil = alles vor dem letzten Punkt (Symbolname folgt).
+        $module = $target.Substring(0, $target.LastIndexOf("."))
+        $module | Should -Be "avcodec-62_arm64ec"
+        $module | Should -Not -Match "\."
+    }
+
     It "laesst bereits weitergeleitete Zeilen unveraendert" {
         $def = "EXPORTS`n    foo=other.foo"
-        (ConvertTo-ForwarderDef -DefContent $def -ForwardTo "m.arm64") | Should -Match ([regex]::Escape("foo=other.foo"))
+        (ConvertTo-ForwarderDef -DefContent $def -ForwardTo "m_arm64") | Should -Match ([regex]::Escape("foo=other.foo"))
     }
 }
 
@@ -87,10 +101,10 @@ Describe "Get-Arm64xForwarderPlan" {
         $plan = Get-Plan (New-Layout -Libs @("avcodec-62"))
         $fwd = $plan.Forwarders[0]
         $fwd.ForwarderDll   | Should -Match "avcodec-62\.dll$"
-        $fwd.RealArm64Dll   | Should -Match "avcodec-62\.arm64\.dll$"
-        $fwd.RealArm64ecDll | Should -Match "avcodec-62\.arm64ec\.dll$"
-        $fwd.ForwardToArm64   | Should -Be "avcodec-62.arm64"
-        $fwd.ForwardToArm64ec | Should -Be "avcodec-62.arm64ec"
+        $fwd.RealArm64Dll   | Should -Match "avcodec-62_arm64\.dll$"
+        $fwd.RealArm64ecDll | Should -Match "avcodec-62_arm64ec\.dll$"
+        $fwd.ForwardToArm64   | Should -Be "avcodec-62_arm64"
+        $fwd.ForwardToArm64ec | Should -Be "avcodec-62_arm64ec"
     }
 
     It "baut den /machine:arm64x-Linkaufruf in der MS-dokumentierten Form" {
