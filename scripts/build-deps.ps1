@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Baut die externen FFmpeg-Bibliotheken (dav1d, x264, x265) für ARM64 und
+    Baut die externen FFmpeg-Bibliotheken (x264, x265) für ARM64 und
     ARM64EC und prüft die Hardware-Encoding-Header (AMF, nv-codec-headers) im
     Preflight.
 
@@ -15,8 +15,7 @@
          Header, bricht das Skript ab, benennt den konkret fehlenden Header und
          erzeugt keine Teil-Artefakte (kein Codec-Build läuft an).
 
-      2. Externe-Codec-Builds (R6.1/R6.2/R6.3):
-           - dav1d  via meson/ninja  (BSD, beide Varianten)
+      2. Externe-Codec-Builds (R6.1/R6.2):
            - x264   via configure    (GPL, nur GPL-Variante)
            - x265   via cmake        (GPL, nur GPL-Variante)
          Jeder Codec wird je Ziel-Architektur (arm64 und arm64ec) gebaut.
@@ -37,18 +36,15 @@
                       auszuführen (Header-Preflight und Lib-Preflight laufen
                       trotzdem vollständig).
       -TestHooks    : eine Hashtable mit austauschbaren Callbacks
-                      (PathTest / BuildDav1d / BuildX264 / BuildX265), damit
+                      (PathTest / BuildX264 / BuildX265), damit
                       Tests die Datei-Existenz und die Codec-Builds simulieren
                       können, ohne echte Pfade/Tools zu benötigen.
 
 .PARAMETER Variant
     Lizenz-Variante: 'gpl' oder 'lgpl' (case-insensitiv). Steuert, welche
     externen Codecs gebaut werden:
-      - 'gpl'  : dav1d + x264 + x265
-      - 'lgpl' : nur dav1d (x264/x265 sind ausschließlich GPL, R6.5)
-
-.PARAMETER Dav1dSourceDir
-    Quellverzeichnis von dav1d (enthält die meson-Projektdatei).
+      - 'gpl'  : x264 + x265
+      - 'lgpl' : keine externen Codec-Libs (x264/x265 sind ausschließlich GPL, R6.5)
 
 .PARAMETER X264SourceDir
     Quellverzeichnis von x264 (enthält `configure`). Nur für die GPL-Variante
@@ -82,7 +78,6 @@
     Optionale Hashtable mit Callbacks zur lokalen Testbarkeit:
       PathTest   : [scriptblock] { param($Path) [bool] } — ersetzt die
                    Datei-/Verzeichnis-Existenzprüfung (Test-Path).
-      BuildDav1d : [scriptblock] { param($Ctx) } — ersetzt den dav1d-Build.
       BuildX264  : [scriptblock] { param($Ctx) } — ersetzt den x264-Build.
       BuildX265  : [scriptblock] { param($Ctx) } — ersetzt den x265-Build.
     Wirft ein Callback, gilt der Codec-Build als fehlgeschlagen (R6.4).
@@ -94,19 +89,19 @@
 
 .EXAMPLE
     ./scripts/build-deps.ps1 -Variant gpl `
-        -Dav1dSourceDir C:\src\dav1d -X264SourceDir C:\src\x264 -X265SourceDir C:\src\x265 `
+        -X264SourceDir C:\src\x264 -X265SourceDir C:\src\x265 `
         -OutputDir C:\out\deps `
         -AmfHeaderPath C:\headers\AMF -NvCodecHeaderPath C:\headers\nv-codec-headers
 
 .EXAMPLE
     # Lokaler Trockenlauf: prüft Preflight-Logik, ohne echte Tools.
-    ./scripts/build-deps.ps1 -Variant lgpl -Dav1dSourceDir . -OutputDir .\out `
+    ./scripts/build-deps.ps1 -Variant lgpl -OutputDir .\out `
         -AmfHeaderPath .\AMF -NvCodecHeaderPath .\nv -DryRun
 
 .NOTES
     Feature: arm64x-ffmpeg-build
     Task: 8.1
-    Requirements: 5.5, 6.4, 6.1, 6.2, 6.3
+    Requirements: 5.5, 6.4, 6.1, 6.2
     Design: Architecture (Schritt 7 "Externe Libs bauen"), C2/C3, Error Handling
             (AMF/NV-Header fehlt -> R5.5; Externe Lib fehlt (GPL) -> R6.4)
 #>
@@ -117,10 +112,6 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('gpl', 'lgpl', IgnoreCase = $true)]
     [string] $Variant,
-
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrEmpty()]
-    [string] $Dav1dSourceDir,
 
     [string] $X264SourceDir,
 
@@ -216,15 +207,14 @@ function Get-RequiredCodec {
     .SYNOPSIS
         Liefert die je Variante zu bauenden externen Codecs (Design C3).
     .DESCRIPTION
-        GPL  -> dav1d, x264, x265
-        LGPL -> nur dav1d (x264/x265 sind ausschließlich GPL, R6.5)
+        GPL  -> x264, x265
+        LGPL -> keine externen Codec-Libs (x264/x265 sind ausschließlich GPL, R6.5)
         Jeder Eintrag nennt Name, Build-System und das Quellverzeichnis.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
         [Parameter(Mandatory)] [string] $Variant,
-        [Parameter(Mandatory)] [string] $Dav1dSourceDir,
         [string] $X264SourceDir,
         [string] $X265SourceDir
     )
@@ -232,15 +222,6 @@ function Get-RequiredCodec {
     $variantKey = $Variant.ToLowerInvariant()
 
     $codecs = [System.Collections.Generic.List[pscustomobject]]::new()
-
-    # dav1d: BSD-2, beide Varianten (R6.3).
-    $codecs.Add([pscustomobject]@{
-        Name        = 'dav1d'
-        BuildSystem = 'meson'
-        SourceDir   = $Dav1dSourceDir
-        HookName    = 'BuildDav1d'
-        Requirement = 'R6.3'
-    })
 
     if ($variantKey -eq 'gpl') {
         # x264: GPL, configure (R6.1).
@@ -348,9 +329,6 @@ function Invoke-CodecBuild {
     #    (R6.4) berichtet.
     try {
         switch ($Codec.BuildSystem) {
-            'meson' {
-                Invoke-Dav1dBuild -Ctx $ctx
-            }
             'configure' {
                 Invoke-X264Build -Ctx $ctx
             }
@@ -386,32 +364,6 @@ function New-OutputDirectory {
 # ---------------------------------------------------------------------------
 # Echte Toolchain-Aufrufe (nur auf dem CI-Runner; lokal via DryRun/Hooks ersetzt)
 # ---------------------------------------------------------------------------
-
-function Invoke-Dav1dBuild {
-    <#
-    .SYNOPSIS
-        Baut dav1d via meson/ninja für die im Kontext genannte Architektur.
-    #>
-    [CmdletBinding()]
-    param([Parameter(Mandatory)] [pscustomobject] $Ctx)
-
-    New-OutputDirectory -Path $Ctx.OutputDir
-    $buildDir = Join-Path $Ctx.OutputDir 'meson-build'
-
-    # meson-Cross-Setup je Architektur, dann ninja. --prefix installiert Header
-    # und .lib in das Ausgabeverzeichnis.
-    & meson setup $buildDir $Ctx.SourceDir `
-        --prefix $Ctx.OutputDir `
-        --default-library shared `
-        --buildtype release
-    if ($LASTEXITCODE -ne 0) { throw "meson setup schlug fehl (Exit $LASTEXITCODE)." }
-
-    & ninja -C $buildDir
-    if ($LASTEXITCODE -ne 0) { throw "ninja schlug fehl (Exit $LASTEXITCODE)." }
-
-    & ninja -C $buildDir install
-    if ($LASTEXITCODE -ne 0) { throw "ninja install schlug fehl (Exit $LASTEXITCODE)." }
-}
 
 function Invoke-X264Build {
     <#
@@ -471,14 +423,13 @@ function Invoke-BuildDeps {
         Reihenfolge (Fail-fast):
           1. Header-Preflight (R5.5) — vor allem anderen.
           2. Codec-Quell-Preflight (R6.4) — vor jedem Build.
-          3. Codec-Builds je Architektur (R6.1/R6.2/R6.3).
+          3. Codec-Builds je Architektur (R6.1/R6.2).
         Diese Funktion bündelt die reine Orchestrierung, damit sie testbar bleibt.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)] [string] $Variant,
-        [Parameter(Mandatory)] [string] $Dav1dSourceDir,
         [string] $X264SourceDir,
         [string] $X265SourceDir,
         [Parameter(Mandatory)] [string] $OutputDir,
@@ -498,7 +449,6 @@ function Invoke-BuildDeps {
 
     # --- Schritt 2: erforderliche Codecs je Variante ermitteln -------------
     $codecs = Get-RequiredCodec -Variant $Variant `
-        -Dav1dSourceDir $Dav1dSourceDir `
         -X264SourceDir $X264SourceDir `
         -X265SourceDir $X265SourceDir
 
@@ -533,7 +483,6 @@ function Invoke-BuildDeps {
 
 if ($MyInvocation.InvocationName -ne '.') {
     $summary = Invoke-BuildDeps -Variant $Variant `
-        -Dav1dSourceDir $Dav1dSourceDir `
         -X264SourceDir $X264SourceDir `
         -X265SourceDir $X265SourceDir `
         -OutputDir $OutputDir `

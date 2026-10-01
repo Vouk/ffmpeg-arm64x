@@ -21,7 +21,7 @@
     gleichnamigen DLL der arm64ec-Ansicht und JEDE .lib der arm64-Ansicht mit der
     gleichnamigen .lib der arm64ec-Ansicht. Damit ist es sowohl je Variante
     (GPL/LGPL, jeweils über beide Architektur-Ansichten) als auch je externer
-    Bibliothek (dav1d/x264/x265) anwendbar — der Aufrufer richtet einfach
+    Bibliothek (x264/x265) anwendbar — der Aufrufer richtet einfach
     -Arm64Dir und -Arm64ecDir auf die jeweiligen Ausgabeverzeichnisse.
 
     Lokale Testbarkeit: Die echten MSVC-Werkzeuge (`link.exe`, `lib.exe`)

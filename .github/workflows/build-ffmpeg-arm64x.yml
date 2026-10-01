@@ -240,9 +240,11 @@ jobs:
 
           # Quelle beziehen und in $SRC_DIR\ffmpeg entpacken.
           New-Item -ItemType Directory -Force -Path $env:SRC_DIR | Out-Null
-          $tarball = Join-Path $env:SRC_DIR "ffmpeg-$version.tar.xz"
-          $url = "https://ffmpeg.org/releases/ffmpeg-$version.tar.xz"
-          # $url = "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n$version.tar.gz"
+          $tarball = Join-Path $env:SRC_DIR "ffmpeg-$version.tar.gz"
+          # Bezug vom GitHub-Mirror des FFmpeg-Projekts statt von ffmpeg.org.
+          # Release-Tags sind dort mit "n" praefixiert (z. B. n8.0); das
+          # Quellarchiv liegt unter archive/refs/tags/n<version>.tar.gz.
+          $url = "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n$version.tar.gz"
           Write-Host "Lade FFmpeg-Quelle: $url"
           # Download ueber curl.exe (auf dem Runner vorhanden): folgt Redirects,
           # bricht bei haengender Verbindung ueber Timeouts ab und wiederholt
@@ -308,11 +310,11 @@ jobs:
           Write-Host "Header und externe Codec-Quellen bereit unter $env:SRC_DIR."
 
       # ---------------------------------------------------------------------
-      #  7. Externe Libs bauen (R5.5/R6.1/R6.2/R6.3/R6.4): x264/x265 je
+      #  7. Externe Libs bauen (R5.5/R6.1/R6.2/R6.4): x264/x265 je
       #     arm64 + arm64ec. build-deps.ps1 fuehrt zuerst den Header-Preflight
       #     (R5.5) und den Codec-Quell-Preflight (R6.4) durch -- fehlt ein
       #     Header oder eine Lib, Abbruch mit Benennung, keine Teil-Artefakte.
-      #     Fuer GPL werden x264+x265 gebaut, fuer LGPL nur.
+      #     Fuer GPL werden x264+x265 gebaut; LGPL hat keine externen Codecs.
       #     Der Build laeuft in der %VCVARS%-Umgebung (MSVC-Cross-Tools).
       # ---------------------------------------------------------------------
       - name: Build external libraries (x264 / x265)
@@ -320,7 +322,7 @@ jobs:
         run: |
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
-          rem GPL-Variante: x264 + x265 (R6.1/R6.2/R6.3), je arm64 + arm64ec.
+          rem GPL-Variante: x264 + x265 (R6.1/R6.2), je arm64 + arm64ec.
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-deps.ps1" ^
             -Variant gpl ^
             -X264SourceDir "%SRC_DIR%\x264" ^
@@ -329,7 +331,8 @@ jobs:
             -AmfHeaderPath "%AMF_HEADERS%" ^
             -NvCodecHeaderPath "%NVCODEC_HEADERS%"
           if errorlevel 1 exit /b 1
-          rem LGPL-Variante: nur (x264/x265 sind ausschliesslich GPL, R6.5).
+          rem LGPL-Variante: keine externen Codec-Libs (x264/x265 sind GPL-only,
+          rem R6.5); nur der Header-Preflight wird ausgefuehrt.
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-deps.ps1" ^
             -Variant lgpl ^
             -OutputDir "%OUT_DIR%\deps\lgpl" ^
@@ -416,10 +419,10 @@ jobs:
           if errorlevel 1 exit /b 1
 
       # ---------------------------------------------------------------------
-      # 12. Faehigkeitspruefung (R5.1-R5.4/R6.1-R6.3/R6.5): je Variante die von
+      # 12. Faehigkeitspruefung (R5.1-R5.4/R6.1-R6.2/R6.5): je Variante die von
       #     ffmpeg.exe gemeldeten Encoder/Decoder/Hardware-Faehigkeiten pruefen.
-      #     GPL listet libx264/libx265; LGPL NICHT x264/x265, aber
-      #     ; beide AMF + NVENC/NVDEC.
+      #     GPL listet libx264/libx265; LGPL NICHT x264/x265;
+      #     beide AMF + NVENC/NVDEC.
       # ---------------------------------------------------------------------
       - name: Verify FFmpeg capabilities (GPL + LGPL)
         run: |

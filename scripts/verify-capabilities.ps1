@@ -11,12 +11,10 @@
     Ausgabe und stellt sicher, dass die je Variante erwarteten Fähigkeiten
     vorhanden (bzw. bei der LGPL-Variante die GPL-Codecs abwesend) sind:
 
-      - GPL  (R6.1/R6.2/R6.3):
+      - GPL  (R6.1/R6.2):
           * `-encoders` listet `libx264` UND `libx265`
-          * `-decoders`/`-encoders` listet den dav1d-basierten AV1-Support
       - LGPL (R6.5):
           * `libx264`/`libx265` erscheinen NICHT
-          * dav1d/AV1 erscheint
       - Beide (R5.1–R5.4):
           * `-encoders`/`-hwaccels` listet AMF- UND NVENC/NVDEC-Einträge
 
@@ -158,17 +156,15 @@ function Test-FFmpegCapabilities {
     .SYNOPSIS
         Reine Assertion-Logik: prüft die erfassten
         `-encoders`/`-decoders`/`-hwaccels`-Texte gegen die je Variante
-        erwarteten Fähigkeiten (Task 9.4, R5.1–R5.4, R6.1–R6.3, R6.5).
+        erwarteten Fähigkeiten (Task 9.4, R5.1–R5.4, R6.1–R6.2, R6.5).
     .DESCRIPTION
         Nimmt die drei erfassten ffmpeg-Ausgabetexte und die Variante entgegen,
         parst sie über Get-FFmpegListedNames und wertet die Regeln aus:
 
           GPL:
             * libx264 UND libx265 in -encoders vorhanden (R6.1/R6.2)
-            * dav1d/AV1-Decoder in -decoders vorhanden (R6.3)
           LGPL:
             * libx264/libx265 in -encoders ABWESEND (R6.5)
-            * dav1d/AV1-Decoder in -decoders vorhanden (R6.3)
           Beide:
             * AMF-Encoder (*_amf) in -encoders vorhanden (R5.1/R5.3)
             * NVENC-Encoder (*_nvenc) in -encoders vorhanden (R5.2)
@@ -217,20 +213,8 @@ function Test-FFmpegCapabilities {
     # Case-insensitive Nachschlagewerke für schnelle Prüfungen.
     $encSet = [System.Collections.Generic.HashSet[string]]::new(
         [string[]]$encoders, [System.StringComparer]::OrdinalIgnoreCase)
-    $decSet = [System.Collections.Generic.HashSet[string]]::new(
-        [string[]]$decoders, [System.StringComparer]::OrdinalIgnoreCase)
 
     $violations = [System.Collections.Generic.List[string]]::new()
-
-    # --- dav1d/AV1-Decoder (beide Varianten, R6.3) ---------------------------
-    # Der dav1d-basierte AV1-Decoder heißt in FFmpeg "libdav1d"; der native
-    # Decoder heißt "av1". Wir akzeptieren beide als AV1-Decoder-Nachweis, aber
-    # der dav1d-Nachweis ist bevorzugt.
-    $hasDav1d = $decSet.Contains('libdav1d')
-    $hasAv1Decoder = $hasDav1d -or $decSet.Contains('av1')
-    if (-not $hasAv1Decoder) {
-        $violations.Add("Fehlender AV1/dav1d-Decoder in -decoders (erwartet 'libdav1d' oder 'av1', R6.3).")
-    }
 
     # --- GPL-only Codecs: libx264/libx265 (R6.1/R6.2 vs. R6.5) ---------------
     $hasX264 = $encSet.Contains('libx264')

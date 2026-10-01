@@ -12,7 +12,6 @@ artifacts/
 src/
 _deps/
 ffmpeg-*/
-dav1d-*/
 x264-*/
 x265_*/
 

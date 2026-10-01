@@ -7,10 +7,10 @@
     -hwaccels) in die reine Funktion Test-FFmpegCapabilities und prüfen die
     je Variante erwarteten Regeln (present/absent):
 
-      - GPL  : libx264/libx265 vorhanden, dav1d/AV1 vorhanden, AMF+NVENC/NVDEC.
-      - LGPL : libx264/libx265 ABWESEND, dav1d/AV1 vorhanden, AMF+NVENC/NVDEC.
+      - GPL  : libx264/libx265 vorhanden, AMF+NVENC/NVDEC.
+      - LGPL : libx264/libx265 ABWESEND, AMF+NVENC/NVDEC.
 
-    Requirements: 6.1, 6.2, 6.3, 6.5, 5.1, 5.2, 5.3, 5.4
+    Requirements: 6.1, 6.2, 6.5, 5.1, 5.2, 5.3, 5.4
 #>
 
 BeforeAll {
@@ -116,7 +116,7 @@ Describe 'Get-FFmpegListedNames (Parser)' {
 }
 
 Describe 'Test-FFmpegCapabilities - GPL-Variante' {
-    It 'besteht bei vorhandenen libx264/libx265 + dav1d + AMF + NVENC/NVDEC' {
+    It 'besteht bei vorhandenen libx264/libx265 + AMF + NVENC/NVDEC' {
         $r = Test-FFmpegCapabilities `
             -EncodersText $script:EncodersGpl `
             -DecodersText $script:DecodersWithDav1d `
@@ -137,19 +137,10 @@ Describe 'Test-FFmpegCapabilities - GPL-Variante' {
         ($r.Violations -join ' ') | Should -Match 'libx265'
     }
 
-    It 'schlägt fehl und benennt den fehlenden AV1/dav1d-Decoder' {
-        $r = Test-FFmpegCapabilities `
-            -EncodersText $script:EncodersGpl `
-            -DecodersText $script:DecodersNoAv1 `
-            -HwaccelsText $script:HwaccelsWithCuda `
-            -Variant 'gpl'
-        $r.Success | Should -BeFalse
-        ($r.Violations -join ' ') | Should -Match 'AV1/dav1d'
-    }
 }
 
 Describe 'Test-FFmpegCapabilities - LGPL-Variante' {
-    It 'besteht ohne libx264/libx265, aber mit dav1d + AMF + NVENC/NVDEC' {
+    It 'besteht ohne libx264/libx265, mit AMF + NVENC/NVDEC' {
         $r = Test-FFmpegCapabilities `
             -EncodersText $script:EncodersLgpl `
             -DecodersText $script:DecodersWithDav1d `

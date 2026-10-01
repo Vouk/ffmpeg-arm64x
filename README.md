@@ -9,8 +9,8 @@ Der Build läuft vollautomatisch, aber **ausschließlich manuell ausgelöst** (`
 ## Was gebaut wird
 
 - **FFmpeg 8.x** als Shared Libraries (`avcodec`, `avformat`, `avutil`, `avfilter`, `avdevice`, `swscale`, `swresample`) — je DLL eine namensgleiche `.lib`-Import-Bibliothek.
-- **GPL-Variante**: mit `--enable-gpl`, inklusive libx264, libx265, dav1d.
-- **LGPL-Variante**: ohne GPL-Komponenten (kein libx264/libx265), aber mit dav1d.
+- **GPL-Variante**: mit `--enable-gpl`, inklusive libx264, libx265.
+- **LGPL-Variante**: ohne GPL-Komponenten (kein libx264/libx265).
 - **Beide Varianten**: AMF- und NVIDIA-Header (Hardware-Encoding/Decoding) eingebunden.
 - **Zwei MSI-Installer** (WiX): Lizenzanzeige, anpassbarer Installationspfad (Standard `C:\Program Files\FFmpeg 8`), Eintrag des `bin`-Pfads an den Anfang der System-`PATH`-Variable.
 

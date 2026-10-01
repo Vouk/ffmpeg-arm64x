@@ -13,7 +13,7 @@
     Correctness Property 3 ("Die LGPL-Konfiguration schließt GPL-Komponenten
     immer aus").
 
-    Requirements: 4.2, 4.3, 6.5, 5.1, 5.2, 5.3, 5.4, 6.3
+    Requirements: 4.2, 4.3, 6.5, 5.1, 5.2, 5.3, 5.4
 
     Zusammensetzung:
       Gemeinsam (beide Varianten):
@@ -22,7 +22,6 @@
         --arch=<arm64|arm64ec>
         --enable-amf                    (AMF-Header)        R5.1/R5.3
         --enable-nvenc --enable-nvdec   (nv-codec-headers)  R5.2/R5.4
-        --enable-libdav1d               (BSD, LGPL-kompat.) R6.3
       Nur GPL (zusätzlich):
         --enable-gpl                    R4.2
         --enable-libx264                R6.1
@@ -79,7 +78,6 @@ function Get-ConfigureFlags {
     $flags.Add('--enable-amf')       # R5.1 / R5.3
     $flags.Add('--enable-nvenc')     # R5.2 / R5.4
     $flags.Add('--enable-nvdec')     # R5.2 / R5.4
-    $flags.Add('--enable-libdav1d')  # R6.3
 
     # GPL-spezifische Flags (nur GPL-Variante).
     if ($variantKey -eq 'gpl') {
