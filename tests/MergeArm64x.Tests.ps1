@@ -116,17 +116,20 @@ Describe "Get-Arm64xForwarderPlan" {
         ($linkArgs -join " ") | Should -Match "/defArm64Native:\S+avutil-60\.arm64\.fwd\.def"
         ($linkArgs -join " ") | Should -Match "/def:\S+avutil-60\.arm64ec\.fwd\.def"
         ($linkArgs -join " ") | Should -Match "/out:\S+avutil-60\.dll"
+        # Import-Libs stammen aus den Forwarder-.defs, NICHT aus FFmpegs libs.
+        ($linkArgs -join " ") | Should -Match "avutil-60\.arm64\.fwd\.lib"
+        ($linkArgs -join " ") | Should -Match "avutil-60\.arm64ec\.fwd\.lib"
+        ($linkArgs -join " ") | Should -Not -Match "[\\/]avutil\.lib"
     }
 
-    It "mappt die versionierte DLL auf die unversionierte Import-Lib" {
-        # FFmpeg: avcodec-62.dll, aber avcodec.lib. Der Forwarder muss die
-        # unversionierte .lib referenzieren, sonst "Eingabe fehlt".
+    It "plant Import-Libs aus den Forwarder-.defs (versioniert, je Ansicht)" {
+        # Die ARM64X-Link-Libs werden aus den Forwarder-.defs erzeugt und sind
+        # je Ansicht benannt -- unabhaengig von FFmpegs unversionierter .lib.
         $plan = Get-Plan (New-Layout -Libs @("avcodec-62"))
         $fwd = $plan.Forwarders[0]
-        $fwd.SrcArm64Lib   | Should -Match "[\\/]avcodec\.lib$"
-        $fwd.SrcArm64ecLib | Should -Match "[\\/]avcodec\.lib$"
-        $fwd.SrcArm64Lib   | Should -Not -Match "avcodec-62\.lib$"
-        # .def bleibt versioniert.
+        $fwd.FwdArm64Lib   | Should -Match "[\\/]avcodec-62\.arm64\.fwd\.lib$"
+        $fwd.FwdArm64ecLib | Should -Match "[\\/]avcodec-62\.arm64ec\.fwd\.lib$"
+        # .def-Quelle bleibt versioniert.
         $fwd.SrcArm64Def   | Should -Match "[\\/]avcodec-62\.def$"
     }
 

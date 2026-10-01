@@ -28,8 +28,17 @@
          "Sym=<base>_arm64.Sym" bzw. "Sym=<base>_arm64ec.Sym". Wichtig: der
          Zielmodulname darf KEINEN Punkt enthalten, sonst teilt der .def-Parser
          ihn falsch auf -- deshalb Unterstrich statt Punkt.
-      3. Zwei leere OBJs werden erzeugt (arm64 + arm64ec).
-      4. Der Forwarder <base>.dll wird mit /MACHINE:ARM64X gelinkt.
+      3. Aus den Forwarder-.defs werden Import-Libs erzeugt (MS-Rezept):
+         link /lib /machine:arm64 /def:<arm64.fwd.def> /out:<base>.arm64.fwd.lib
+         link /lib /machine:x64   /def:<arm64ec.fwd.def> /out:<base>.arm64ec.fwd.lib
+         Diese Libs -- NICHT die FFmpeg-Original-Libs -- gehen in den Link;
+         nur so ist jeder Export als Weiterleitung definiert (sonst meldet der
+         Linker die EC-Exporte als "unresolved external symbol (EC Symbol)").
+      4. Zwei leere OBJs werden erzeugt (arm64 + arm64ec).
+      5. Der Forwarder <base>.dll wird mit /MACHINE:ARM64X gelinkt:
+         link /dll /noentry /machine:arm64x /defArm64Native:<arm64.fwd.def>
+              /def:<arm64ec.fwd.def> empty_arm64.obj empty_arm64ec.obj
+              /out:<base>.dll <base>.arm64.fwd.lib <base>.arm64ec.fwd.lib
 
     Lokale Testbarkeit: cl.exe/link.exe existieren nur auf dem CI-Runner. Die
     reine Logik (Forwarder-.def-Erzeugung und Kommando-Zusammenstellung) ist in
@@ -185,6 +194,12 @@ function Get-Arm64xForwarderPlan {
             ForwarderDll    = Join-Path $OutputDir "$base.dll"
             FwdArm64Def     = Join-Path $OutputDir "$base.arm64.fwd.def"
             FwdArm64ecDef   = Join-Path $OutputDir "$base.arm64ec.fwd.def"
+            # Import-Libs werden AUS den Forwarder-.defs erzeugt (MS-Rezept):
+            #   link /lib /machine:arm64 /def:<arm64.fwd.def> /out:<...arm64.fwd.lib>
+            #   link /lib /machine:x64   /def:<arm64ec.fwd.def> /out:<...arm64ec.fwd.lib>
+            # Diese -- NICHT die FFmpeg-Original-Libs -- gehen in den ARM64X-Link.
+            FwdArm64Lib     = Join-Path $OutputDir "$base.arm64.fwd.lib"
+            FwdArm64ecLib   = Join-Path $OutputDir "$base.arm64ec.fwd.lib"
             ForwardToArm64  = "${base}_arm64"
             ForwardToArm64ec= "${base}_arm64ec"
             EmptyArm64Obj   = Join-Path $OutputDir "$base.empty.arm64.obj"
@@ -221,8 +236,8 @@ function Get-ForwarderLinkArgs {
         "/out:$($Fwd.ForwarderDll)"
         $Fwd.EmptyArm64Obj
         $Fwd.EmptyArm64ecObj
-        $Fwd.SrcArm64Lib
-        $Fwd.SrcArm64ecLib
+        $Fwd.FwdArm64Lib
+        $Fwd.FwdArm64ecLib
     )
 }
 
@@ -237,6 +252,30 @@ $script:DefaultDllLister = {
 # ---------------------------------------------------------------------------
 # Ausfuehrung (echte Toolchain, nur auf CI)
 # ---------------------------------------------------------------------------
+
+function New-ForwarderImportLib {
+    <#
+    .SYNOPSIS
+        Erzeugt eine Import-Lib aus einer Forwarder-.def via link /lib.
+    .DESCRIPTION
+        MS-Rezept fuer ARM64X-Pure-Forwarder: die Import-Libs, die in den
+        /machine:arm64x-Link eingehen, werden aus den Forwarder-.defs erzeugt
+        (nicht aus den FFmpeg-Original-Libs). Nur so sind alle Exporte als
+        Weiterleitung definiert und der Link meldet keine "unresolved external".
+        ARM64-Seite: /machine:arm64, EC-Seite: /machine:x64.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $LinkExe,
+        [Parameter(Mandatory)][string] $Def,
+        [Parameter(Mandatory)][string] $OutLib,
+        [Parameter(Mandatory)][ValidateSet('arm64','x64')][string] $Machine
+    )
+    $libArgs = @('/lib', "/machine:$Machine", "/def:$Def", "/out:$OutLib")
+    & $LinkExe @libArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
+    if ($LASTEXITCODE -ne 0) { throw "link /lib ($Machine) fuer '$Def' schlug fehl (Exit $LASTEXITCODE)." }
+    if (-not (Test-Path -LiteralPath $OutLib)) { throw "Import-Lib nicht erzeugt: '$OutLib'." }
+}
 
 function New-EmptyObject {
     <#
@@ -273,16 +312,12 @@ function Invoke-ForwarderBuild {
 
     Write-Host "  forwarder -> $($Fwd.BaseName).dll (-> _arm64.dll / _arm64ec.dll)"
 
-    foreach ($pair in @(
-        @{ Src = $Fwd.SrcArm64Dll;   Dst = $Fwd.RealArm64Dll },
-        @{ Src = $Fwd.SrcArm64ecDll; Dst = $Fwd.RealArm64ecDll },
-        @{ Src = $Fwd.SrcArm64Def;   Dst = $null },
-        @{ Src = $Fwd.SrcArm64ecDef; Dst = $null },
-        @{ Src = $Fwd.SrcArm64Lib;   Dst = $null },
-        @{ Src = $Fwd.SrcArm64ecLib; Dst = $null }
-    )) {
-        if (-not (Test-Path -LiteralPath $pair.Src)) {
-            throw "ARM64X-Forwarder '$($Fwd.BaseName)': Eingabe fehlt: '$($pair.Src)'."
+    # Noetige Eingaben: die echten DLLs beider Ansichten und ihre .def-Dateien.
+    # Die FFmpeg-Original-Import-Libs werden NICHT gebraucht -- die Import-Libs
+    # fuer den ARM64X-Link werden frisch aus den Forwarder-.defs erzeugt.
+    foreach ($src in @($Fwd.SrcArm64Dll, $Fwd.SrcArm64ecDll, $Fwd.SrcArm64Def, $Fwd.SrcArm64ecDef)) {
+        if (-not (Test-Path -LiteralPath $src)) {
+            throw "ARM64X-Forwarder '$($Fwd.BaseName)': Eingabe fehlt: '$src'."
         }
     }
 
@@ -296,11 +331,17 @@ function Invoke-ForwarderBuild {
     [System.IO.File]::WriteAllText($Fwd.FwdArm64Def,   $arm64Def,   (New-Object System.Text.UTF8Encoding($false)))
     [System.IO.File]::WriteAllText($Fwd.FwdArm64ecDef, $arm64ecDef, (New-Object System.Text.UTF8Encoding($false)))
 
-    # 3) leere OBJs
+    # 3) Import-Libs AUS den Forwarder-.defs erzeugen (MS-Rezept). Der ARM64X-
+    #    Link bekommt diese Libs; sie definieren jeden Export als Weiterleitung.
+    #    ARM64-Seite: /machine:arm64, EC-Seite: /machine:x64 (so im MS-Doc).
+    New-ForwarderImportLib -LinkExe $LinkExe -Def $Fwd.FwdArm64Def   -OutLib $Fwd.FwdArm64Lib   -Machine arm64
+    New-ForwarderImportLib -LinkExe $LinkExe -Def $Fwd.FwdArm64ecDef -OutLib $Fwd.FwdArm64ecLib -Machine x64
+
+    # 4) leere OBJs
     New-EmptyObject -ClExe $ClExe -OutObj $Fwd.EmptyArm64Obj
     New-EmptyObject -ClExe $ClExe -OutObj $Fwd.EmptyArm64ecObj -Ec
 
-    # 4) Forwarder linken
+    # 5) Forwarder linken
     $linkArgs = Get-ForwarderLinkArgs -Fwd $Fwd
     & $LinkExe @linkArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
     if ($LASTEXITCODE -ne 0) {
@@ -314,6 +355,11 @@ function Invoke-ForwarderBuild {
     foreach ($tmp in @($Fwd.EmptyArm64Obj, $Fwd.EmptyArm64ecObj,
                        [System.IO.Path]::ChangeExtension($Fwd.EmptyArm64Obj, '.c'),
                        [System.IO.Path]::ChangeExtension($Fwd.EmptyArm64ecObj, '.c'),
+                       $Fwd.FwdArm64Lib, $Fwd.FwdArm64ecLib,
+                       [System.IO.Path]::ChangeExtension($Fwd.FwdArm64Lib, '.exp'),
+                       [System.IO.Path]::ChangeExtension($Fwd.FwdArm64ecLib, '.exp'),
+                       [System.IO.Path]::ChangeExtension($Fwd.ForwarderDll, '.lib'),
+                       [System.IO.Path]::ChangeExtension($Fwd.ForwarderDll, '.exp'),
                        $Fwd.FwdArm64Def, $Fwd.FwdArm64ecDef)) {
         Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     }
