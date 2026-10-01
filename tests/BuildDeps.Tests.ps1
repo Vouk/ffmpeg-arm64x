@@ -46,3 +46,54 @@ Describe "Invoke-X265Build: Import-Lib-Alias" {
         Join-Path $ctx.OutputDir "lib/libx265.lib" | Should -Exist
     }
 }
+
+Describe "Install-HwHeaders" {
+    BeforeAll {
+        $repoRoot = Split-Path -Parent $PSScriptRoot
+        . (Join-Path $repoRoot "scripts/build-deps.ps1") -Variant "gpl" -OutputDir $env:TEMP -AmfHeaderPath $env:TEMP -NvCodecHeaderPath $env:TEMP
+
+        # Nachbau der Repo-Layouts: AMF (amf/public/include) und nv-codec-headers.
+        function New-HwHeaderSources {
+            param([string] $Root, [switch] $WithoutPcIn)
+            $amf = Join-Path $Root "AMF/amf/public/include"
+            New-Item -ItemType Directory -Force -Path (Join-Path $amf "core"), (Join-Path $amf "components") | Out-Null
+            Set-Content -Path (Join-Path $amf "core/Version.h") -Value "#define AMF_VERSION_MAJOR 1"
+            Set-Content -Path (Join-Path $amf "components/VideoEncoderVCE.h") -Value "// stub"
+            $nvRoot = Join-Path $Root "nv-codec-headers"
+            New-Item -ItemType Directory -Force -Path (Join-Path $nvRoot "include/ffnvcodec") | Out-Null
+            Set-Content -Path (Join-Path $nvRoot "include/ffnvcodec/nvEncodeAPI.h") -Value "// stub"
+            if (-not $WithoutPcIn) {
+                Set-Content -Path (Join-Path $nvRoot "ffnvcodec.pc.in") -Value @(
+                    "prefix=@@PREFIX@@",
+                    "includedir=`${prefix}/include",
+                    "Name: ffnvcodec",
+                    "Version: 13.0.19.0",
+                    "Cflags: -I`${includedir}"
+                )
+            }
+            [pscustomobject]@{ Amf = $amf; NvInclude = (Join-Path $nvRoot "include"); Out = (Join-Path $Root "out") }
+        }
+    }
+
+    It "legt AMF unter include/AMF und ffnvcodec samt .pc ab" {
+        $src = New-HwHeaderSources -Root (Join-Path $TestDrive "ok")
+        $prefix = Install-HwHeaders -AmfHeaderPath $src.Amf -NvCodecHeaderPath $src.NvInclude -OutputDir $src.Out
+
+        Join-Path $prefix "include/AMF/core/Version.h" | Should -Exist
+        Join-Path $prefix "include/AMF/components/VideoEncoderVCE.h" | Should -Exist
+        Join-Path $prefix "include/ffnvcodec/nvEncodeAPI.h" | Should -Exist
+        $pcPath = Join-Path $prefix "lib/pkgconfig/ffnvcodec.pc"
+        $pcPath | Should -Exist
+        $pc = Get-Content -Raw $pcPath
+        $pc | Should -Not -Match "@@PREFIX@@"
+        $expected = (Resolve-Path $prefix).Path.Replace([char]92, [char]47)
+        $pc | Should -Match ("prefix=" + [regex]::Escape($expected))
+        [System.IO.File]::ReadAllBytes($pcPath)[0] | Should -Not -Be 0xEF
+    }
+
+    It "bricht ab, wenn ffnvcodec.pc.in fehlt" {
+        $src = New-HwHeaderSources -Root (Join-Path $TestDrive "nopc") -WithoutPcIn
+        { Install-HwHeaders -AmfHeaderPath $src.Amf -NvCodecHeaderPath $src.NvInclude -OutputDir $src.Out } |
+            Should -Throw -ExpectedMessage "*ffnvcodec.pc.in*"
+    }
+}

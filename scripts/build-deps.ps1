@@ -79,6 +79,8 @@
       PathTest   : [scriptblock] { param($Path) [bool] } — ersetzt die
                    Datei-/Verzeichnis-Existenzprüfung (Test-Path).
       BuildX264  : [scriptblock] { param($Ctx) } — ersetzt den x264-Build.
+      InstallHwHeaders : [scriptblock] { param($Prefix) } - ersetzt das Ablegen
+                   der AMF-/nv-codec-Header (Schritt 3b).
       BuildX265  : [scriptblock] { param($Ctx) } — ersetzt den x265-Build.
     Wirft ein Callback, gilt der Codec-Build als fehlgeschlagen (R6.4).
 
@@ -518,6 +520,64 @@ function Invoke-X265Build {
 # Orchestrierung
 # ---------------------------------------------------------------------------
 
+function Install-HwHeaders {
+    <#
+    .SYNOPSIS
+        Legt AMF- und nv-codec-Header so ab, wie FFmpegs configure sie sucht
+        (R5.1-R5.4).
+    .DESCRIPTION
+        * AMF: FFmpeg inkludiert <AMF/core/Version.h>; im AMF-Repo liegen die
+          Header unter amf/public/include. Ziel: <Prefix>/include/AMF.
+        * nv-codec-headers: FFmpeg findet ffnvcodec NUR ueber pkg-config.
+          Ziel: <Prefix>/include/ffnvcodec plus <Prefix>/lib/pkgconfig/
+          ffnvcodec.pc aus ffnvcodec.pc.in. Entspricht make install des Repos
+          (Prefix in gemischter Form D:/..., wie dort per cygpath -m).
+        Prefix ist <OutputDir>/hwheaders.
+    .OUTPUTS
+        [string] Der Prefix.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)] [string] $AmfHeaderPath,
+        [Parameter(Mandatory)] [string] $NvCodecHeaderPath,
+        [Parameter(Mandatory)] [string] $OutputDir
+    )
+
+    $prefix  = Join-Path $OutputDir 'hwheaders'
+    $include = Join-Path $prefix 'include'
+    $amfDest = Join-Path $include 'AMF'
+    $nvDest  = Join-Path $include 'ffnvcodec'
+    $pcDir   = Join-Path (Join-Path $prefix 'lib') 'pkgconfig'
+    foreach ($d in @($amfDest, $nvDest, $pcDir)) { New-OutputDirectory -Path $d }
+
+    # AMF: Inhalt von amf/public/include nach include/AMF.
+    Copy-Item -Path (Join-Path $AmfHeaderPath '*') -Destination $amfDest -Recurse -Force
+    if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $amfDest 'core') 'Version.h'))) {
+        throw "AMF-Header unvollstaendig: core/Version.h fehlt unter '$AmfHeaderPath'."
+    }
+
+    # nv-codec-headers: include/ffnvcodec/*.h nach include/ffnvcodec.
+    $nvSrc = Join-Path $NvCodecHeaderPath 'ffnvcodec'
+    if (-not (Test-Path -LiteralPath (Join-Path $nvSrc 'nvEncodeAPI.h'))) {
+        throw "nv-codec-headers unvollstaendig: ffnvcodec/nvEncodeAPI.h fehlt unter '$NvCodecHeaderPath'."
+    }
+    Copy-Item -Path (Join-Path $nvSrc '*') -Destination $nvDest -Recurse -Force
+
+    # ffnvcodec.pc aus ffnvcodec.pc.in (liegt in der Repo-Wurzel, also im
+    # Elternordner von include). Ohne .pc meldet configure fuer nvdec/nvenc
+    # not all dependencies are satisfied: ffnvcodec.
+    $pcIn = Join-Path (Split-Path -Parent $NvCodecHeaderPath) 'ffnvcodec.pc.in'
+    if (-not (Test-Path -LiteralPath $pcIn)) {
+        throw "ffnvcodec.pc.in nicht gefunden: '$pcIn'."
+    }
+    $prefixMixed = (Resolve-Path -LiteralPath $prefix).Path.Replace('\', '/')
+    $pc = [System.IO.File]::ReadAllText($pcIn).Replace('@@PREFIX@@', $prefixMixed)
+    [System.IO.File]::WriteAllText((Join-Path $pcDir 'ffnvcodec.pc'), $pc, (New-Object System.Text.UTF8Encoding($false)))
+
+    return $prefix
+}
+
 function Invoke-BuildDeps {
     <#
     .SYNOPSIS
@@ -559,6 +619,20 @@ function Invoke-BuildDeps {
     # Vor jedem Build: fehlt eine erforderliche Lib, Abbruch mit Benennung.
     Test-CodecSourcePreflight -Codec $codecs -PathTester $pathTester
 
+    # --- Schritt 3b: Hardware-Header fuer FFmpeg ablegen (R5.1-R5.4) -------
+    # Erst nach beiden Preflights, damit bei einem Abbruch keine
+    # Teil-Artefakte entstehen. Im DryRun wird nichts geschrieben; Tests
+    # koennen den Schritt ueber den Hook InstallHwHeaders ersetzen.
+    $hwPrefix = Join-Path $OutputDir 'hwheaders'
+    if ($Hooks -and $Hooks.ContainsKey('InstallHwHeaders') -and $Hooks.InstallHwHeaders) {
+        & ([scriptblock] $Hooks.InstallHwHeaders) $hwPrefix
+    }
+    elseif (-not $DryRun) {
+        $hwPrefix = Install-HwHeaders -AmfHeaderPath $AmfHeaderPath `
+            -NvCodecHeaderPath $NvCodecHeaderPath -OutputDir $OutputDir
+        Write-Host "Hardware-Header abgelegt: $hwPrefix"
+    }
+
     # --- Schritt 4: Builds je (Codec, Architektur) -------------------------
     $built = [System.Collections.Generic.List[pscustomobject]]::new()
     foreach ($codec in $codecs) {
@@ -574,6 +648,7 @@ function Invoke-BuildDeps {
         Arch        = [string[]] ($Arch | ForEach-Object { $_.ToLowerInvariant() })
         Codecs      = [string[]] ($codecs | ForEach-Object { $_.Name })
         OutputDir   = $OutputDir
+        HwHeaders   = $hwPrefix
         BuiltUnits  = [pscustomobject[]] $built.ToArray()
         DryRun      = [bool] $DryRun
     }

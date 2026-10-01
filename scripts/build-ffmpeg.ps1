@@ -116,6 +116,8 @@ $ErrorActionPreference = 'Stop'
 
 # Reinlogik-Modul für die configure-Flags importieren (COMPLETE, siehe Task 2.3).
 Import-Module (Join-Path $PSScriptRoot 'lib/BuildConfig.psm1') -Force
+# Backport fuer configure (NVIDIA auf aarch64 Windows, FFmpeg-Commit 93f653f95c).
+Import-Module (Join-Path $PSScriptRoot 'lib/FFmpegPatch.psm1') -Force
 
 function ConvertTo-Msys2Path {
     <#
@@ -221,6 +223,17 @@ function Get-FFmpegBuildPlan {
             $pcDir = Join-Path $libWin 'pkgconfig'
             if (Test-Path -LiteralPath $pcDir) { $pkgConfigDirs.Add((ConvertTo-Msys2Path -Path $pcDir)) }
         }
+
+        # Hardware-Header (beide Varianten, von build-deps.ps1 abgelegt):
+        # AMF ueber den include-Pfad (<AMF/core/Version.h>), ffnvcodec ueber
+        # seine .pc-Datei (configure prueft ffnvcodec nur per pkg-config).
+        $hwPrefix = Join-Path $DepsDir 'hwheaders'
+        if (Test-Path -LiteralPath $hwPrefix) {
+            $hwIncPosix = ConvertTo-Msys2Path -Path (Join-Path $hwPrefix 'include')
+            $configureArgs.Add("--extra-cflags=-I$hwIncPosix")
+            $hwPcDir = Join-Path (Join-Path $hwPrefix 'lib') 'pkgconfig'
+            if (Test-Path -LiteralPath $hwPcDir) { $pkgConfigDirs.Add((ConvertTo-Msys2Path -Path $hwPcDir)) }
+        }
     }
 
     $configureArgsArr = [string[]]$configureArgs.ToArray()
@@ -235,7 +248,7 @@ function Get-FFmpegBuildPlan {
     } else { ':' }
     # Diagnose: zeigt im CI-Log, ob pkg-config x264/x265 findet und warum.
     # Laeuft nicht-fatal (|| true), damit set -e hier nicht abbricht.
-    $pkgDiag = 'echo PKG_CONFIG_PATH=$PKG_CONFIG_PATH; which pkg-config pkgconf 2>/dev/null || true; for L in x264 x265; do echo -- $L --; pkg-config --exists $L && echo found || echo missing; pkg-config --cflags --libs $L 2>&1 || true; done'
+    $pkgDiag = 'echo PKG_CONFIG_PATH=$PKG_CONFIG_PATH; which pkg-config pkgconf 2>/dev/null || true; for L in x264 x265 ffnvcodec; do echo -- $L --; pkg-config --exists $L && echo found || echo missing; pkg-config --cflags --libs $L 2>&1 || true; done'
     $bashLines = @(
         'set -euo pipefail'
         $pkgPathLine
@@ -304,6 +317,12 @@ if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'configure'))) {
 if (-not (Test-Path -LiteralPath $Msys2Bash)) {
     throw "MSYS2-bash nicht gefunden: '$Msys2Bash'. Pfad über -Msys2Bash setzen."
 }
+
+# Backport: FFmpeg <= 8.1.3 sperrt NVENC/NVDEC auf aarch64 Windows in
+# configure. Idempotent; enthaelt die Quelle den Fix bereits, bleibt sie
+# unveraendert (siehe scripts/lib/FFmpegPatch.psm1).
+$patchStatus = Invoke-FFmpegConfigurePatch -SourceDir $SourceDir
+Write-Host "configure-Backport (NVIDIA aarch64 Windows): $patchStatus"
 
 # Ausgabe-Prefix vorbereiten.
 New-Item -ItemType Directory -Force -Path $plan.Prefix | Out-Null
