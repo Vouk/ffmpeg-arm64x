@@ -159,6 +159,12 @@ function Get-Arm64xForwarderPlan {
                   "ARM64EC-Ansicht fehlt in '$Arm64ecDir'. Beide Ansichten noetig."
         }
 
+        # FFmpeg benennt die DLL versioniert (avcodec-62.dll), die Import-Lib
+        # aber UNversioniert (avcodec.lib). Die .def wird versioniert erzeugt
+        # (avcodec-62.def) und von build-ffmpeg.ps1 so kopiert. Fuer die .lib
+        # daher die Trailing-Version "-<zahl>" vom Basisnamen entfernen.
+        $libStem = $base -replace '-\d+$', ''
+
         $realArm64Name   = "$base.arm64.dll"
         $realArm64ecName = "$base.arm64ec.dll"
         $fwds.Add([pscustomobject]@{
@@ -168,8 +174,8 @@ function Get-Arm64xForwarderPlan {
             SrcArm64ecDll   = Join-Path $Arm64ecDir "$base.dll"
             SrcArm64Def     = Join-Path $Arm64LibDir   "$base.def"
             SrcArm64ecDef   = Join-Path $Arm64ecLibDir "$base.def"
-            SrcArm64Lib     = Join-Path $Arm64LibDir   "$base.lib"
-            SrcArm64ecLib   = Join-Path $Arm64ecLibDir "$base.lib"
+            SrcArm64Lib     = Join-Path $Arm64LibDir   "$libStem.lib"
+            SrcArm64ecLib   = Join-Path $Arm64ecLibDir "$libStem.lib"
             # Ausgaben
             RealArm64Dll    = Join-Path $OutputDir $realArm64Name
             RealArm64ecDll  = Join-Path $OutputDir $realArm64ecName

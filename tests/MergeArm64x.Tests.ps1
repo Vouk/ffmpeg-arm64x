@@ -19,12 +19,14 @@ BeforeAll {
             New-Item -ItemType Directory -Force -Path (Join-Path $root $d) | Out-Null
         }
         foreach ($lib in $Libs) {
-            Set-Content -Path (Join-Path $root "a64/bin/$lib.dll")   -Value "x"
-            Set-Content -Path (Join-Path $root "a64ec/bin/$lib.dll") -Value "x"
-            Set-Content -Path (Join-Path $root "a64/lib/$lib.def")   -Value "EXPORTS`n    sym1"
-            Set-Content -Path (Join-Path $root "a64ec/lib/$lib.def") -Value "EXPORTS`n    sym1"
-            Set-Content -Path (Join-Path $root "a64/lib/$lib.lib")   -Value "x"
-            Set-Content -Path (Join-Path $root "a64ec/lib/$lib.lib") -Value "x"
+            # DLL + .def versioniert, Import-Lib UNversioniert -- genau wie FFmpeg.
+            $stem = $lib -replace '-\d+$', ''
+            Set-Content -Path (Join-Path $root "a64/bin/$lib.dll")    -Value "x"
+            Set-Content -Path (Join-Path $root "a64ec/bin/$lib.dll")  -Value "x"
+            Set-Content -Path (Join-Path $root "a64/lib/$lib.def")    -Value "EXPORTS`n    sym1"
+            Set-Content -Path (Join-Path $root "a64ec/lib/$lib.def")  -Value "EXPORTS`n    sym1"
+            Set-Content -Path (Join-Path $root "a64/lib/$stem.lib")   -Value "x"
+            Set-Content -Path (Join-Path $root "a64ec/lib/$stem.lib") -Value "x"
         }
         return [pscustomobject]@{
             Root          = $root
@@ -100,6 +102,18 @@ Describe "Get-Arm64xForwarderPlan" {
         ($linkArgs -join " ") | Should -Match "/defArm64Native:\S+avutil-60\.arm64\.fwd\.def"
         ($linkArgs -join " ") | Should -Match "/def:\S+avutil-60\.arm64ec\.fwd\.def"
         ($linkArgs -join " ") | Should -Match "/out:\S+avutil-60\.dll"
+    }
+
+    It "mappt die versionierte DLL auf die unversionierte Import-Lib" {
+        # FFmpeg: avcodec-62.dll, aber avcodec.lib. Der Forwarder muss die
+        # unversionierte .lib referenzieren, sonst "Eingabe fehlt".
+        $plan = Get-Plan (New-Layout -Libs @("avcodec-62"))
+        $fwd = $plan.Forwarders[0]
+        $fwd.SrcArm64Lib   | Should -Match "[\\/]avcodec\.lib$"
+        $fwd.SrcArm64ecLib | Should -Match "[\\/]avcodec\.lib$"
+        $fwd.SrcArm64Lib   | Should -Not -Match "avcodec-62\.lib$"
+        # .def bleibt versioniert.
+        $fwd.SrcArm64Def   | Should -Match "[\\/]avcodec-62\.def$"
     }
 
     It "bricht ab, wenn die ARM64EC-Ansicht eine DLL nicht hat" {
