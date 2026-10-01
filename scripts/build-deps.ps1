@@ -491,6 +491,23 @@ function Invoke-X265Build {
     if ($LASTEXITCODE -ne 0) { throw "x265 cmake build schlug fehl (Exit $LASTEXITCODE)." }
     & cmake --install $buildDir 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "x265 cmake install schlug fehl (Exit $LASTEXITCODE)." }
+    # x265 installiert libx265.lib; FFmpegs MSVC-Wrapper sucht fuer -lx265
+    # jedoch x265.lib (LNK1181: cannot open input file x265.lib). Alias der
+    # vorhandenen Import-Lib auf x265.lib (und libx265.lib) anlegen.
+    $libDir = Join-Path $Ctx.OutputDir 'lib'
+    $srcLib = $null
+    foreach ($cand in @('libx265.lib', 'libx265.dll.lib', 'x265.lib')) {
+        $cp = Join-Path $libDir $cand
+        if (Test-Path -LiteralPath $cp) { $srcLib = $cp; break }
+    }
+    if ($srcLib) {
+        foreach ($alias in @('x265.lib', 'libx265.lib')) {
+            Copy-Item -LiteralPath $srcLib -Destination (Join-Path $libDir $alias) -Force
+        }
+        Write-Host 'x265: Import-Lib-Alias x265.lib/libx265.lib angelegt.'
+    } else {
+        Write-Host 'WARN: x265 Import-Lib nicht gefunden; kein Alias angelegt.'
+    }
 }
 
 # ---------------------------------------------------------------------------
