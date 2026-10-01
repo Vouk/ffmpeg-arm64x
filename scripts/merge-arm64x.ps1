@@ -1,115 +1,82 @@
 <#
 .SYNOPSIS
-    Verschmilzt die arm64- und die arm64ec-Ansicht einer Build-Ausgabe zu
-    ARM64X-Hybrid-Artefakten (DLL via `link.exe /MACHINE:ARM64X`, Import-Lib via
-    `lib.exe /MACHINE:ARM64X`).
+    Erzeugt ARM64X-"Pure Forwarder"-DLLs aus einer ARM64- und einer
+    ARM64EC-Ansicht derselben FFmpeg-Bibliotheken.
 
 .DESCRIPTION
-    Dritter Schritt des ARM64X-Herstellungsmusters (Design: Architecture ->
-    "ARM64X-Merge je Bibliothek" und die 3-Schritt-Beschreibung). Nachdem
-    `build-ffmpeg.ps1`/`build-deps.ps1` je eine vollständige ARM64- UND eine
-    vollständige ARM64EC-Ansicht erzeugt haben, verschmilzt dieses Skript die
-    korrespondierenden Artefakte paarweise zu einem einzigen ARM64X-Hybrid:
+    Hintergrund: Ein ARM64X-Image laesst sich NICHT durch Zusammenlinken zweier
+    fertiger DLLs erzeugen (link.exe /MACHINE:ARM64X auf zwei DLLs scheitert mit
+    LNK1107). Microsoft empfiehlt fuer Builds, bei denen ein voll verschmolzenes
+    Binary schwierig ist (z. B. FFmpegs make-Build), den "Pure Forwarder":
 
-      - DLLs : `link.exe /MACHINE:ARM64X <arm64.dll-Beitrag> <arm64ec.dll-Beitrag>`
-               verschmilzt die beiden Ansichten zu einer Hybrid-DLL.
-      - .lib : `lib.exe  /MACHINE:ARM64X <arm64.lib> <arm64ec.lib>`
-               verschmilzt die beiden Import-Bibliotheken zu einer
-               ARM64X-Import-Lib.
+        link /dll /noentry /machine:arm64x
+             /defArm64Native:<arm64.def> /def:<arm64ec.def>
+             empty_arm64.obj empty_arm64ec.obj
+             /out:<name>.dll <arm64.lib> <arm64ec.lib>
 
-    Das Skript arbeitet je Ausgabe: es paart JEDE DLL der arm64-Ansicht mit der
-    gleichnamigen DLL der arm64ec-Ansicht und JEDE .lib der arm64-Ansicht mit der
-    gleichnamigen .lib der arm64ec-Ansicht. Damit ist es sowohl je Variante
-    (GPL/LGPL, jeweils über beide Architektur-Ansichten) als auch je externer
-    Bibliothek (x264/x265) anwendbar — der Aufrufer richtet einfach
-    -Arm64Dir und -Arm64ecDir auf die jeweiligen Ausgabeverzeichnisse.
+    Das Ergebnis ist eine kleine ARM64X-DLL ohne eigenen Code. Beim Laden
+    leitet Windows jeden Aufruf an die passende echte DLL weiter:
+      * ARM64-Prozess        -> <name>.arm64.dll
+      * x64/ARM64EC-Prozess  -> <name>.arm64ec.dll
+    (Quelle: learn.microsoft.com "Build Arm64X Files" -> Pure Forwarder.)
 
-    Lokale Testbarkeit: Die echten MSVC-Werkzeuge (`link.exe`, `lib.exe`)
-    existieren nur auf dem CI-Runner. Die reine Kommando-Zusammensetzung
-    (Paarung + Argumentlisten) ist in Get-Arm64xMergePlan gekapselt und ohne
-    Toolchain überprüfbar. Zusätzlich:
+    Ablauf je Bibliothek (avcodec, avformat, ...):
+      1. Die echten DLLs der beiden Ansichten werden unter neuen Namen
+         (<base>.arm64.dll / <base>.arm64ec.dll) ins Ausgabeverzeichnis kopiert.
+      2. Aus den von FFmpeg erzeugten .def-Dateien beider Ansichten werden
+         Forwarder-.defs gebaut: jede Zeile "Sym" wird zu
+         "Sym=<base>.arm64.Sym" bzw. "Sym=<base>.arm64ec.Sym".
+      3. Zwei leere OBJs werden erzeugt (arm64 + arm64ec).
+      4. Der Forwarder <base>.dll wird mit /MACHINE:ARM64X gelinkt.
 
-      -DryRun  : gibt für jedes gemergte Artefakt die exakte
-                 link.exe/lib.exe-Befehlszeile aus, OHNE einen Prozess zu
-                 starten; gibt das Plan-Objekt zur Inspektion zurück.
+    Lokale Testbarkeit: cl.exe/link.exe existieren nur auf dem CI-Runner. Die
+    reine Logik (Forwarder-.def-Erzeugung und Kommando-Zusammenstellung) ist in
+    ConvertTo-ForwarderDef und Get-Arm64xForwarderPlan gekapselt und ohne
+    Toolchain pruefbar. -DryRun fuehrt nichts aus, gibt aber den Plan zurueck.
 
-    Fail-fast: `$ErrorActionPreference = 'Stop'`; jeder von Null verschiedene
-    Exit-Code eines Merge-Aufrufs bricht das Skript ab.
+    Fail-fast: $ErrorActionPreference = 'Stop'.
 
 .PARAMETER Arm64Dir
-    Verzeichnis mit der ARM64-Ansicht der Ausgabe (enthält *.dll und *.lib der
-    arm64-Kompilierung).
+    bin-Verzeichnis der ARM64-Ansicht (enthaelt die echten *.dll).
 
 .PARAMETER Arm64ecDir
-    Verzeichnis mit der ARM64EC-Ansicht der Ausgabe (enthält die gleichnamigen
-    *.dll und *.lib der arm64ec-Kompilierung).
+    bin-Verzeichnis der ARM64EC-Ansicht.
+
+.PARAMETER Arm64LibDir
+    lib-Verzeichnis der ARM64-Ansicht (Import-Libs + .def je DLL).
+
+.PARAMETER Arm64ecLibDir
+    lib-Verzeichnis der ARM64EC-Ansicht.
 
 .PARAMETER OutputDir
-    Zielverzeichnis für die ARM64X-Hybrid-Artefakte. Je gemergter DLL/.lib
-    entsteht hier eine gleichnamige Ausgabedatei.
+    Zielverzeichnis fuer Forwarder + die beiden echten DLLs je Bibliothek.
 
 .PARAMETER LinkExe
-    Pfad zu `link.exe` (MSVC-Linker). Parametrisiert, damit die
-    Kommando-Zusammensetzung lokal ohne echte Toolchain überprüfbar ist.
-    Standard: 'link.exe' (aus dem PATH der vcvars-Umgebung).
+    Pfad zu link.exe (Standard: 'link.exe' aus der vcvars-Umgebung).
 
-.PARAMETER LibExe
-    Pfad zu `lib.exe` (MSVC-Bibliothekar). Parametrisiert wie -LinkExe.
-    Standard: 'lib.exe'.
+.PARAMETER ClExe
+    Pfad zu cl.exe (Standard: 'cl.exe').
 
 .PARAMETER DryRun
-    Wenn gesetzt, wird nichts ausgeführt. Für jedes zu mergende Artefakt wird die
-    exakte `link.exe`/`lib.exe`-Befehlszeile ausgegeben und das Plan-Objekt
-    zurückgegeben. Dient der lokalen Verifikation der Kommando-Zusammensetzung.
-
-.OUTPUTS
-    [pscustomobject] mit:
-      Arm64Dir, Arm64ecDir, OutputDir, LinkExe, LibExe,
-      DllMerges  ([pscustomobject[]] je DLL: Name, Arm64, Arm64ec, Output, Tool, Arguments, CommandLine),
-      LibMerges  ([pscustomobject[]] je .lib entsprechend),
-      DryRun.
-
-.EXAMPLE
-    ./scripts/merge-arm64x.ps1 -Arm64Dir C:\out\gpl\arm64\bin -Arm64ecDir C:\out\gpl\arm64ec\bin -OutputDir C:\out\gpl\arm64x\bin
-
-.EXAMPLE
-    # Lokaler Trockenlauf: zeigt die /MACHINE:ARM64X-Aufrufe, ohne zu bauen.
-    ./scripts/merge-arm64x.ps1 -Arm64Dir .\a64 -Arm64ecDir .\a64ec -OutputDir .\a64x -DryRun
+    Nichts ausfuehren; nur den Plan ermitteln und zurueckgeben.
 
 .NOTES
     Feature: arm64x-ffmpeg-build
-    Task: 9.1
-    Requirements: 2.3, 3.2
-    Design: Architecture -> "ARM64X-Merge je Bibliothek" (link.exe/lib.exe
-            /MACHINE:ARM64X), 3-Schritt-Ansatz Schritt 3; Components -> C2
-            Build-Skripte (scripts/merge-arm64x.ps1).
+    Requirements: 2.3, 2.4, 2.5, 3.2
+    Design: ARM64X ueber Pure-Forwarder (MS-empfohlen fuer make-basierte Builds).
 #>
 
 [CmdletBinding()]
 [OutputType([pscustomobject])]
 param(
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrEmpty()]
-    [string] $Arm64Dir,
-
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrEmpty()]
-    [string] $Arm64ecDir,
-
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrEmpty()]
-    [string] $OutputDir,
-
-    [Parameter()]
-    [ValidateNotNullOrEmpty()]
-    [string] $LinkExe = 'link.exe',
-
-    [Parameter()]
-    [ValidateNotNullOrEmpty()]
-    [string] $LibExe = 'lib.exe',
-
-    [Parameter()]
-    [switch] $DryRun
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $Arm64Dir,
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $Arm64ecDir,
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $Arm64LibDir,
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $Arm64ecLibDir,
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $OutputDir,
+    [Parameter()][ValidateNotNullOrEmpty()][string] $LinkExe = 'link.exe',
+    [Parameter()][ValidateNotNullOrEmpty()][string] $ClExe = 'cl.exe',
+    [Parameter()][switch] $DryRun
 )
 
 Set-StrictMode -Version Latest
@@ -119,157 +86,101 @@ $ErrorActionPreference = 'Stop'
 # Reine Logik (ohne Toolchain / Seiteneffekte, lokal testbar)
 # ---------------------------------------------------------------------------
 
-function Format-CommandLine {
+function ConvertTo-ForwarderDef {
     <#
     .SYNOPSIS
-        Setzt eine anzeigbare, korrekt gequotete Befehlszeile aus Programm +
-        Argumenten zusammen (reine String-Transformation).
+        Wandelt eine FFmpeg-.def (EXPORTS + ein Symbol je Zeile) in eine
+        Forwarder-.def um: "Sym" -> "Sym=$ForwardTo.Sym".
     .DESCRIPTION
-        Argumente mit Leerzeichen werden in doppelte Anführungszeichen gesetzt,
-        damit die ausgegebene Zeile exakt dem entspricht, was ausgeführt würde.
+        Reine String-Transformation. $ForwardTo ist der Modulname OHNE
+        Erweiterung (z. B. "avcodec-62.arm64"). Kommentare (;), leere Zeilen und
+        die EXPORTS-Zeile bleiben erhalten; bereits weitergeleitete Zeilen
+        (enthalten "=") werden unveraendert uebernommen. Attribute wie
+        "@1", "PRIVATE", "DATA" nach dem Symbolnamen werden entfernt, da ein
+        Forwarder nur Name=Ziel.Name braucht.
+    .OUTPUTS
+        [string] Der Inhalt der Forwarder-.def (LF-getrennt).
     #>
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        [Parameter(Mandatory)][string] $FilePath,
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]] $Arguments
+        [Parameter(Mandatory)][AllowEmptyString()][string] $DefContent,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $ForwardTo
     )
 
-    $quote = {
-        param($token)
-        if ($token -match '\s') { return '"' + $token + '"' }
-        return $token
+    $out = [System.Collections.Generic.List[string]]::new()
+    foreach ($raw in ($DefContent -split "`r?`n")) {
+        $line = $raw.TrimEnd()
+        $trim = $line.Trim()
+        if ($trim -eq '' -or $trim.StartsWith(';')) { $out.Add($line); continue }
+        if ($trim -match '^(EXPORTS|LIBRARY|NAME|VERSION|HEAPSIZE|STACKSIZE|SECTIONS)\b') { $out.Add($line); continue }
+        if ($trim -match '=') { $out.Add($line); continue }
+        # Erstes Token ist der Symbolname; Rest (Ordinale/Attribute) verwerfen.
+        $sym = ($trim -split '\s+')[0]
+        if ($sym) { $out.Add("    $sym=$ForwardTo.$sym") }
     }
-
-    $parts = [System.Collections.Generic.List[string]]::new()
-    $parts.Add((& $quote $FilePath))
-    foreach ($a in $Arguments) { $parts.Add((& $quote $a)) }
-    return ($parts -join ' ')
+    return ($out -join "`n")
 }
 
-function Get-MergePairsByExtension {
+function Get-Arm64xForwarderPlan {
     <#
     .SYNOPSIS
-        Paart Dateien einer Erweiterung zwischen der arm64- und der
-        arm64ec-Ansicht anhand des Basisnamens (reine Logik).
+        Stellt je gepaarter DLL den vollstaendigen Forwarder-Bauplan zusammen
+        (reine Logik, keine Toolchain, keine Seiteneffekte).
     .DESCRIPTION
-        Für jede Datei mit der angegebenen Erweiterung in -Arm64Dir wird die
-        gleichnamige Datei in -Arm64ecDir gesucht. Fehlt das Gegenstück, wird ein
-        terminierender Fehler ausgelöst, der die betroffene Datei und die
-        fehlende Ansicht benennt (Fail-fast; ein ARM64X-Hybrid setzt beide
-        Ansichten voraus).
-
-        Die Dateiaufzählung erfolgt über den injizierbaren -FileLister, damit die
-        Paarungslogik ohne echtes Dateisystem testbar bleibt. Standard ist eine
-        Get-ChildItem-basierte Aufzählung der Basisnamen.
+        Paart jede DLL der ARM64-Ansicht mit der gleichnamigen DLL der
+        ARM64EC-Ansicht. Je Paar werden die Ziel-Pfade (echte DLLs, Forwarder,
+        Forwarder-.defs, leere OBJs) und die Toolchain-Kommandos (cl fuer die
+        OBJs, link fuer den Forwarder) ermittelt.
     .OUTPUTS
-        [pscustomobject[]] je Paar: BaseName, Arm64 (Pfad), Arm64ec (Pfad).
-    #>
-    [CmdletBinding()]
-    [OutputType([pscustomobject[]])]
-    param(
-        [Parameter(Mandatory)][string] $Arm64Dir,
-        [Parameter(Mandatory)][string] $Arm64ecDir,
-        [Parameter(Mandatory)][string] $Extension,
-        [Parameter(Mandatory)][scriptblock] $FileLister
-    )
-
-    # Basisnamen (ohne Verzeichnis) je Ansicht auflisten.
-    $arm64Names = @(& $FileLister $Arm64Dir $Extension)
-    $arm64ecNames = @(& $FileLister $Arm64ecDir $Extension)
-
-    # Für schnelle, case-insensitive Gegenstück-Suche.
-    $ecSet = [System.Collections.Generic.HashSet[string]]::new(
-        [string[]] $arm64ecNames, [System.StringComparer]::OrdinalIgnoreCase)
-
-    $pairs = [System.Collections.Generic.List[pscustomobject]]::new()
-    foreach ($name in ($arm64Names | Sort-Object)) {
-        if (-not $ecSet.Contains($name)) {
-            throw "ARM64X-Merge nicht moeglich fuer '$name$Extension': " +
-                  "die ARM64EC-Ansicht fehlt in '$Arm64ecDir'. Ein ARM64X-Hybrid " +
-                  "setzt sowohl die ARM64- als auch die ARM64EC-Ansicht voraus."
-        }
-        $pairs.Add([pscustomobject]@{
-            BaseName = $name
-            Arm64    = (Join-Path $Arm64Dir   ($name + $Extension))
-            Arm64ec  = (Join-Path $Arm64ecDir ($name + $Extension))
-        })
-    }
-
-    return , ([pscustomobject[]] $pairs.ToArray())
-}
-
-function Get-Arm64xMergePlan {
-    <#
-    .SYNOPSIS
-        Setzt die vollständige ARM64X-Merge-Kommandozusammenstellung zusammen
-        (reine Logik, ohne Toolchain-Aufruf).
-    .DESCRIPTION
-        Baut je DLL-Paar die `link.exe /MACHINE:ARM64X ...`-Argumentliste und je
-        .lib-Paar die `lib.exe /MACHINE:ARM64X ...`-Argumentliste. Der arm64- und
-        der arm64ec-Beitrag werden als Eingaben, das Zielartefakt als
-        `/OUT:<OutputDir>\<Basisname><ext>` angegeben. Vollständig
-        seiteneffektfrei, damit sie lokal (auch im -DryRun) überprüfbar ist.
-    .OUTPUTS
-        [pscustomobject] mit DllMerges und LibMerges (siehe Skript-OUTPUTS).
+        [pscustomobject] mit Forwarders ([pscustomobject[]]).
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string] $Arm64Dir,
         [Parameter(Mandatory)][string] $Arm64ecDir,
+        [Parameter(Mandatory)][string] $Arm64LibDir,
+        [Parameter(Mandatory)][string] $Arm64ecLibDir,
         [Parameter(Mandatory)][string] $OutputDir,
         [Parameter(Mandatory)][string] $LinkExe,
-        [Parameter(Mandatory)][string] $LibExe,
-        [Parameter(Mandatory)][scriptblock] $FileLister
+        [Parameter(Mandatory)][string] $ClExe,
+        [Parameter(Mandatory)][scriptblock] $DllLister
     )
 
-    # --- DLL-Paare: link.exe /MACHINE:ARM64X --------------------------------
-    $dllPairs = Get-MergePairsByExtension -Arm64Dir $Arm64Dir -Arm64ecDir $Arm64ecDir `
-        -Extension '.dll' -FileLister $FileLister
+    $arm64Dlls   = @(& $DllLister $Arm64Dir)
+    $arm64ecSet  = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@(& $DllLister $Arm64ecDir), [System.StringComparer]::OrdinalIgnoreCase)
 
-    $dllMerges = [System.Collections.Generic.List[pscustomobject]]::new()
-    foreach ($p in $dllPairs) {
-        $outPath = Join-Path $OutputDir ($p.BaseName + '.dll')
-        $args = [string[]] @(
-            '/MACHINE:ARM64X'
-            '/DLL'
-            "/OUT:$outPath"
-            $p.Arm64
-            $p.Arm64ec
-        )
-        $dllMerges.Add([pscustomobject]@{
-            Name        = $p.BaseName + '.dll'
-            Arm64       = $p.Arm64
-            Arm64ec     = $p.Arm64ec
-            Output      = $outPath
-            Tool        = $LinkExe
-            Arguments   = $args
-            CommandLine = (Format-CommandLine -FilePath $LinkExe -Arguments $args)
-        })
-    }
+    $fwds = [System.Collections.Generic.List[pscustomobject]]::new()
+    foreach ($base in ($arm64Dlls | Sort-Object)) {
+        if (-not $arm64ecSet.Contains($base)) {
+            throw "ARM64X-Forwarder nicht moeglich fuer '$base.dll': die " +
+                  "ARM64EC-Ansicht fehlt in '$Arm64ecDir'. Beide Ansichten noetig."
+        }
 
-    # --- .lib-Paare: lib.exe /MACHINE:ARM64X --------------------------------
-    $libPairs = Get-MergePairsByExtension -Arm64Dir $Arm64Dir -Arm64ecDir $Arm64ecDir `
-        -Extension '.lib' -FileLister $FileLister
-
-    $libMerges = [System.Collections.Generic.List[pscustomobject]]::new()
-    foreach ($p in $libPairs) {
-        $outPath = Join-Path $OutputDir ($p.BaseName + '.lib')
-        $args = [string[]] @(
-            '/MACHINE:ARM64X'
-            "/OUT:$outPath"
-            $p.Arm64
-            $p.Arm64ec
-        )
-        $libMerges.Add([pscustomobject]@{
-            Name        = $p.BaseName + '.lib'
-            Arm64       = $p.Arm64
-            Arm64ec     = $p.Arm64ec
-            Output      = $outPath
-            Tool        = $LibExe
-            Arguments   = $args
-            CommandLine = (Format-CommandLine -FilePath $LibExe -Arguments $args)
+        $realArm64Name   = "$base.arm64.dll"
+        $realArm64ecName = "$base.arm64ec.dll"
+        $fwds.Add([pscustomobject]@{
+            BaseName        = $base
+            # Eingaben
+            SrcArm64Dll     = Join-Path $Arm64Dir   "$base.dll"
+            SrcArm64ecDll   = Join-Path $Arm64ecDir "$base.dll"
+            SrcArm64Def     = Join-Path $Arm64LibDir   "$base.def"
+            SrcArm64ecDef   = Join-Path $Arm64ecLibDir "$base.def"
+            SrcArm64Lib     = Join-Path $Arm64LibDir   "$base.lib"
+            SrcArm64ecLib   = Join-Path $Arm64ecLibDir "$base.lib"
+            # Ausgaben
+            RealArm64Dll    = Join-Path $OutputDir $realArm64Name
+            RealArm64ecDll  = Join-Path $OutputDir $realArm64ecName
+            ForwarderDll    = Join-Path $OutputDir "$base.dll"
+            FwdArm64Def     = Join-Path $OutputDir "$base.arm64.fwd.def"
+            FwdArm64ecDef   = Join-Path $OutputDir "$base.arm64ec.fwd.def"
+            ForwardToArm64  = "$base.arm64"
+            ForwardToArm64ec= "$base.arm64ec"
+            EmptyArm64Obj   = Join-Path $OutputDir "$base.empty.arm64.obj"
+            EmptyArm64ecObj = Join-Path $OutputDir "$base.empty.arm64ec.obj"
+            LinkArgs        = $null  # wird nach .def-Erzeugung gesetzt
         })
     }
 
@@ -278,114 +189,175 @@ function Get-Arm64xMergePlan {
         Arm64ecDir = $Arm64ecDir
         OutputDir  = $OutputDir
         LinkExe    = $LinkExe
-        LibExe     = $LibExe
-        DllMerges  = [pscustomobject[]] $dllMerges.ToArray()
-        LibMerges  = [pscustomobject[]] $libMerges.ToArray()
+        ClExe      = $ClExe
+        Forwarders = [pscustomobject[]] $fwds.ToArray()
     }
 }
 
-# Standard-Dateiaufzählung (echtes Dateisystem). Liefert die Basisnamen (ohne
-# Verzeichnis, ohne Erweiterung) aller Dateien mit der Erweiterung im Verzeichnis.
-$script:DefaultFileLister = {
-    param([string] $Dir, [string] $Ext)
-    if (-not (Test-Path -LiteralPath $Dir)) {
-        throw "Verzeichnis nicht gefunden: '$Dir'."
-    }
-    Get-ChildItem -LiteralPath $Dir -Filter ("*" + $Ext) -File |
+function Get-ForwarderLinkArgs {
+    <#
+    .SYNOPSIS
+        Baut die link.exe-Argumentliste fuer einen ARM64X-Pure-Forwarder.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory)][pscustomobject] $Fwd)
+
+    return [string[]] @(
+        '/dll'
+        '/noentry'
+        '/machine:arm64x'
+        "/defArm64Native:$($Fwd.FwdArm64Def)"
+        "/def:$($Fwd.FwdArm64ecDef)"
+        "/out:$($Fwd.ForwarderDll)"
+        $Fwd.EmptyArm64Obj
+        $Fwd.EmptyArm64ecObj
+        $Fwd.SrcArm64Lib
+        $Fwd.SrcArm64ecLib
+    )
+}
+
+$script:DefaultDllLister = {
+    param([string] $Dir)
+    if (-not (Test-Path -LiteralPath $Dir)) { throw "Verzeichnis nicht gefunden: '$Dir'." }
+    Get-ChildItem -LiteralPath $Dir -Filter '*.dll' -File |
+        Where-Object { $_.Name -notmatch '\.arm64(ec)?\.dll$' } |
         ForEach-Object { $_.BaseName }
 }
 
 # ---------------------------------------------------------------------------
-# Ausführung eines einzelnen Merge-Aufrufs (echte Toolchain, nur auf CI)
+# Ausfuehrung (echte Toolchain, nur auf CI)
 # ---------------------------------------------------------------------------
 
-function Invoke-Merge {
+function New-EmptyObject {
     <#
     .SYNOPSIS
-        Führt einen einzelnen link.exe/lib.exe-Merge aus (Fail-fast).
+        Erzeugt ein leeres OBJ (arm64 oder arm64ec) via cl.exe.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][pscustomobject] $Merge)
+    param(
+        [Parameter(Mandatory)][string] $ClExe,
+        [Parameter(Mandatory)][string] $OutObj,
+        [switch] $Ec
+    )
+    $empty = [System.IO.Path]::ChangeExtension($OutObj, '.c')
+    Set-Content -LiteralPath $empty -Value '' -Encoding Ascii
+    $clArgs = @('/nologo', '/c')
+    if ($Ec) { $clArgs += '/arm64EC' }
+    $clArgs += @("/Fo$OutObj", $empty)
+    & $ClExe @clArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
+    if ($LASTEXITCODE -ne 0) { throw "cl.exe (leeres OBJ$(if($Ec){' arm64ec'}else{' arm64'})) schlug fehl (Exit $LASTEXITCODE)." }
+    if (-not (Test-Path -LiteralPath $OutObj)) { throw "Leeres OBJ nicht erzeugt: '$OutObj'." }
+}
 
-    Write-Host "  merge -> $($Merge.Name)"
-    Write-Verbose $Merge.CommandLine
-    & $Merge.Tool @($Merge.Arguments)
-    if ($LASTEXITCODE -ne 0) {
-        throw "ARM64X-Merge fehlgeschlagen fuer '$($Merge.Name)': " +
-              "'$($Merge.Tool)' Exit-Code $LASTEXITCODE. Befehl: $($Merge.CommandLine)"
+function Invoke-ForwarderBuild {
+    <#
+    .SYNOPSIS
+        Baut einen einzelnen ARM64X-Forwarder (echte Toolchain, Fail-fast).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject] $Fwd,
+        [Parameter(Mandatory)][string] $LinkExe,
+        [Parameter(Mandatory)][string] $ClExe
+    )
+
+    Write-Host "  forwarder -> $($Fwd.BaseName).dll (-> .arm64.dll / .arm64ec.dll)"
+
+    foreach ($pair in @(
+        @{ Src = $Fwd.SrcArm64Dll;   Dst = $Fwd.RealArm64Dll },
+        @{ Src = $Fwd.SrcArm64ecDll; Dst = $Fwd.RealArm64ecDll },
+        @{ Src = $Fwd.SrcArm64Def;   Dst = $null },
+        @{ Src = $Fwd.SrcArm64ecDef; Dst = $null },
+        @{ Src = $Fwd.SrcArm64Lib;   Dst = $null },
+        @{ Src = $Fwd.SrcArm64ecLib; Dst = $null }
+    )) {
+        if (-not (Test-Path -LiteralPath $pair.Src)) {
+            throw "ARM64X-Forwarder '$($Fwd.BaseName)': Eingabe fehlt: '$($pair.Src)'."
+        }
     }
-    if (-not (Test-Path -LiteralPath $Merge.Output)) {
-        throw "ARM64X-Merge lieferte keine Ausgabedatei: '$($Merge.Output)'."
+
+    # 1) echte DLLs unter neuen Namen ablegen
+    Copy-Item -LiteralPath $Fwd.SrcArm64Dll   -Destination $Fwd.RealArm64Dll   -Force
+    Copy-Item -LiteralPath $Fwd.SrcArm64ecDll -Destination $Fwd.RealArm64ecDll -Force
+
+    # 2) Forwarder-.defs erzeugen
+    $arm64Def   = ConvertTo-ForwarderDef -DefContent ([System.IO.File]::ReadAllText($Fwd.SrcArm64Def))   -ForwardTo $Fwd.ForwardToArm64
+    $arm64ecDef = ConvertTo-ForwarderDef -DefContent ([System.IO.File]::ReadAllText($Fwd.SrcArm64ecDef)) -ForwardTo $Fwd.ForwardToArm64ec
+    [System.IO.File]::WriteAllText($Fwd.FwdArm64Def,   $arm64Def,   (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($Fwd.FwdArm64ecDef, $arm64ecDef, (New-Object System.Text.UTF8Encoding($false)))
+
+    # 3) leere OBJs
+    New-EmptyObject -ClExe $ClExe -OutObj $Fwd.EmptyArm64Obj
+    New-EmptyObject -ClExe $ClExe -OutObj $Fwd.EmptyArm64ecObj -Ec
+
+    # 4) Forwarder linken
+    $linkArgs = Get-ForwarderLinkArgs -Fwd $Fwd
+    & $LinkExe @linkArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
+    if ($LASTEXITCODE -ne 0) {
+        throw "ARM64X-Forwarder-Link fuer '$($Fwd.BaseName).dll' fehlgeschlagen (Exit $LASTEXITCODE)."
+    }
+    if (-not (Test-Path -LiteralPath $Fwd.ForwarderDll)) {
+        throw "ARM64X-Forwarder nicht erzeugt: '$($Fwd.ForwarderDll)'."
+    }
+
+    # Aufraeumen: Zwischendateien (OBJs, .c, Forwarder-.defs) entfernen.
+    foreach ($tmp in @($Fwd.EmptyArm64Obj, $Fwd.EmptyArm64ecObj,
+                       [System.IO.Path]::ChangeExtension($Fwd.EmptyArm64Obj, '.c'),
+                       [System.IO.Path]::ChangeExtension($Fwd.EmptyArm64ecObj, '.c'),
+                       $Fwd.FwdArm64Def, $Fwd.FwdArm64ecDef)) {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     }
 }
 
-# ---------------------------------------------------------------------------
-# Orchestrierung
-# ---------------------------------------------------------------------------
-
-function Invoke-Arm64xMerge {
-    <#
-    .SYNOPSIS
-        Erstellt den Merge-Plan und führt ihn (außerhalb von -DryRun) aus.
-    #>
+function Invoke-Arm64xForwarder {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string] $Arm64Dir,
         [Parameter(Mandatory)][string] $Arm64ecDir,
+        [Parameter(Mandatory)][string] $Arm64LibDir,
+        [Parameter(Mandatory)][string] $Arm64ecLibDir,
         [Parameter(Mandatory)][string] $OutputDir,
         [Parameter(Mandatory)][string] $LinkExe,
-        [Parameter(Mandatory)][string] $LibExe,
+        [Parameter(Mandatory)][string] $ClExe,
         [switch] $DryRun,
-        [scriptblock] $FileLister
+        [scriptblock] $DllLister
     )
 
-    $lister = if ($FileLister) { $FileLister } else { $script:DefaultFileLister }
-
-    $plan = Get-Arm64xMergePlan -Arm64Dir $Arm64Dir -Arm64ecDir $Arm64ecDir `
-        -OutputDir $OutputDir -LinkExe $LinkExe -LibExe $LibExe -FileLister $lister
-
-    $allMerges = @($plan.DllMerges) + @($plan.LibMerges)
+    $lister = if ($DllLister) { $DllLister } else { $script:DefaultDllLister }
+    $plan = Get-Arm64xForwarderPlan -Arm64Dir $Arm64Dir -Arm64ecDir $Arm64ecDir `
+        -Arm64LibDir $Arm64LibDir -Arm64ecLibDir $Arm64ecLibDir `
+        -OutputDir $OutputDir -LinkExe $LinkExe -ClExe $ClExe -DllLister $lister
 
     if ($DryRun) {
-        Write-Host "== DRY RUN: ARM64X-Merge =="
-        Write-Host "ARM64   : $Arm64Dir"
-        Write-Host "ARM64EC : $Arm64ecDir"
-        Write-Host "Output  : $OutputDir"
-        Write-Host "link.exe: $LinkExe"
-        Write-Host "lib.exe : $LibExe"
-        Write-Host "-- DLL-Merges (link.exe /MACHINE:ARM64X): $($plan.DllMerges.Count) --"
-        foreach ($m in $plan.DllMerges) { Write-Host "  $($m.CommandLine)" }
-        Write-Host "-- .lib-Merges (lib.exe /MACHINE:ARM64X): $($plan.LibMerges.Count) --"
-        foreach ($m in $plan.LibMerges) { Write-Host "  $($m.CommandLine)" }
-    }
-    else {
-        New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
-        Write-Host "ARM64X-Merge: $($plan.DllMerges.Count) DLL(s), $($plan.LibMerges.Count) .lib -> $OutputDir"
-        foreach ($m in $allMerges) { Invoke-Merge -Merge $m }
-        Write-Host "ARM64X-Merge abgeschlossen: $OutputDir"
+        Write-Host "== DRY RUN: ARM64X-Forwarder =="
+        Write-Host "ARM64   bin: $Arm64Dir"
+        Write-Host "ARM64EC bin: $Arm64ecDir"
+        Write-Host "Output     : $OutputDir"
+        foreach ($fwd in $plan.Forwarders) {
+            $fwd.LinkArgs = Get-ForwarderLinkArgs -Fwd $fwd
+            Write-Host "  $($fwd.BaseName).dll:"
+            Write-Host "    link $($fwd.LinkArgs -join ' ')"
+        }
+        return $plan
     }
 
-    return ([pscustomobject]@{
-        Arm64Dir   = $plan.Arm64Dir
-        Arm64ecDir = $plan.Arm64ecDir
-        OutputDir  = $plan.OutputDir
-        LinkExe    = $plan.LinkExe
-        LibExe     = $plan.LibExe
-        DllMerges  = $plan.DllMerges
-        LibMerges  = $plan.LibMerges
-        DryRun     = [bool] $DryRun
-    })
+    New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+    Write-Host "ARM64X-Forwarder: $($plan.Forwarders.Count) Bibliothek(en) -> $OutputDir"
+    foreach ($fwd in $plan.Forwarders) {
+        Invoke-ForwarderBuild -Fwd $fwd -LinkExe $LinkExe -ClExe $ClExe
+    }
+    Write-Host "ARM64X-Forwarder abgeschlossen: $OutputDir"
+    return $plan
 }
 
 # ---------------------------------------------------------------------------
-# Einstiegspunkt: nur ausführen, wenn das Skript direkt aufgerufen wird
-# (nicht beim Dot-Sourcing durch Tests).
+# Einstiegspunkt
 # ---------------------------------------------------------------------------
 
 if ($MyInvocation.InvocationName -ne '.') {
-    $summary = Invoke-Arm64xMerge -Arm64Dir $Arm64Dir -Arm64ecDir $Arm64ecDir `
-        -OutputDir $OutputDir -LinkExe $LinkExe -LibExe $LibExe -DryRun:$DryRun
-
-    $summary
+    Invoke-Arm64xForwarder -Arm64Dir $Arm64Dir -Arm64ecDir $Arm64ecDir `
+        -Arm64LibDir $Arm64LibDir -Arm64ecLibDir $Arm64ecLibDir `
+        -OutputDir $OutputDir -LinkExe $LinkExe -ClExe $ClExe -DryRun:$DryRun
 }

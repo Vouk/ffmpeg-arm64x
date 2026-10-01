@@ -374,5 +374,24 @@ foreach ($exe in @('ffmpeg.exe', 'ffprobe.exe')) {
     }
 }
 
+# ARM64X-Vorbereitung: FFmpeg installiert .dll und .lib, aber NICHT die je
+# Shared-Lib erzeugte .def (sie bleibt im Quellbaum unter lib<name>/).
+# Der ARM64X-Forwarder (merge-arm64x.ps1) braucht die Export-Liste beider
+# Ansichten, daher die .def nach <prefix>/lib/<dll-basename>.def kopieren.
+$libOut = Join-Path $plan.Prefix 'lib'
+New-Item -ItemType Directory -Force -Path $libOut | Out-Null
+$dllBases = Get-ChildItem -LiteralPath $binDir -Filter '*.dll' -File | ForEach-Object { $_.BaseName }
+$defCount = 0
+foreach ($base in $dllBases) {
+    $defSrc = Get-ChildItem -LiteralPath $SourceDir -Recurse -Filter "$base.def" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($defSrc) {
+        Copy-Item -LiteralPath $defSrc.FullName -Destination (Join-Path $libOut "$base.def") -Force
+        $defCount++
+    } else {
+        Write-Host "WARN: keine .def fuer $base.dll im Quellbaum gefunden."
+    }
+}
+Write-Host "ARM64X-Vorbereitung: $defCount .def-Datei(en) nach $libOut kopiert."
+
 Write-Host "FFmpeg-Build abgeschlossen: $($plan.Prefix)"
 return $plan

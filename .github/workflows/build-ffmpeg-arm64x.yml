@@ -396,16 +396,20 @@ jobs:
         run: |
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
-          rem GPL: arm64 + arm64ec -> arm64x (bin-Verzeichnisse enthalten DLL + .lib).
+          rem GPL: arm64 + arm64ec -> ARM64X-Forwarder je Bibliothek.
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\merge-arm64x.ps1" ^
             -Arm64Dir "%OUT_DIR%\ffmpeg\gpl\arm64\bin" ^
             -Arm64ecDir "%OUT_DIR%\ffmpeg\gpl\arm64ec\bin" ^
+            -Arm64LibDir "%OUT_DIR%\ffmpeg\gpl\arm64\lib" ^
+            -Arm64ecLibDir "%OUT_DIR%\ffmpeg\gpl\arm64ec\lib" ^
             -OutputDir "%OUT_DIR%\ffmpeg\gpl\arm64x\bin"
           if errorlevel 1 exit /b 1
-          rem LGPL: arm64 + arm64ec -> arm64x.
+          rem LGPL: arm64 + arm64ec -> ARM64X-Forwarder je Bibliothek.
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\merge-arm64x.ps1" ^
             -Arm64Dir "%OUT_DIR%\ffmpeg\lgpl\arm64\bin" ^
             -Arm64ecDir "%OUT_DIR%\ffmpeg\lgpl\arm64ec\bin" ^
+            -Arm64LibDir "%OUT_DIR%\ffmpeg\lgpl\arm64\lib" ^
+            -Arm64ecLibDir "%OUT_DIR%\ffmpeg\lgpl\arm64ec\lib" ^
             -OutputDir "%OUT_DIR%\ffmpeg\lgpl\arm64x\bin"
           if errorlevel 1 exit /b 1
 
