@@ -72,9 +72,21 @@ function Get-ConfigureFlags {
     $flags = [System.Collections.Generic.List[string]]::new()
     $flags.Add('--toolchain=msvc')
     $flags.Add('--target-os=win32')
+    # Cross-Compile auf x64-Host nach ARM64: der ARM64-cl.exe kann kein auf
+    # dem Host lauffaehiges Testprogramm erzeugen; --enable-cross-compile
+    # ueberspringt FFmpegs "run a test binary"-Pruefung (sonst: C compiler
+    # test failed / cl.exe is unable to create an executable file).
+    $flags.Add('--enable-cross-compile')
     $flags.Add('--enable-shared')
     $flags.Add('--disable-static')
-    $flags.Add("--arch=$archKey")
+    # FFmpeg kennt KEINE arch 'arm64ec' -- fuer beide Ansichten ist die
+    # FFmpeg-Arch arm64. Die ARM64EC-Ansicht entsteht ueber cl /arm64EC und
+    # link /MACHINE:arm64EC (wie bei x264/x265), nicht ueber --arch.
+    $flags.Add('--arch=arm64')
+    if ($archKey -eq 'arm64ec') {
+        $flags.Add('--extra-cflags=-arm64EC')
+        $flags.Add('--extra-ldflags=-MACHINE:arm64EC')
+    }
     $flags.Add('--enable-amf')       # R5.1 / R5.3
     $flags.Add('--enable-nvenc')     # R5.2 / R5.4
     $flags.Add('--enable-nvdec')     # R5.2 / R5.4
