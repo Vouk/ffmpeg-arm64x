@@ -502,7 +502,11 @@ function Invoke-X265Build {
     }
     if ($srcLib) {
         foreach ($alias in @('x265.lib', 'libx265.lib')) {
-            Copy-Item -LiteralPath $srcLib -Destination (Join-Path $libDir $alias) -Force
+            $dest = Join-Path $libDir $alias
+            # Nicht auf sich selbst kopieren: Copy-Item wirft sonst
+            # Cannot overwrite the item ... with itself.
+            if ([string]::Equals($dest, $srcLib, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            Copy-Item -LiteralPath $srcLib -Destination $dest -Force
         }
         Write-Host 'x265: Import-Lib-Alias x265.lib/libx265.lib angelegt.'
     } else {
