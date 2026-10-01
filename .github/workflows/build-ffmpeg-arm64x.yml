@@ -292,10 +292,18 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:SRC_DIR | Out-Null
 
           function Clone-Repo {
-            param([string] $Url, [string] $Dest)
+            param([string] $Url, [string] $Dest, [string] $Branch, [switch] $StripGit)
             if (-not (Test-Path -LiteralPath $Dest)) {
-              git clone --depth=1 $Url $Dest
+              $cargs = @('clone', '--depth=1')
+              if ($Branch) { $cargs += @('--branch', $Branch) }
+              $cargs += @($Url, $Dest)
+              git @cargs
               if ($LASTEXITCODE -ne 0) { Write-Error "git clone fehlgeschlagen: $Url" }
+              # Fuer x265: .git entfernen, damit x265s Version.cmake nicht per
+              # (leerem) git-describe eine leere X265_LATEST_TAG erzeugt
+              # (-> list(GET) auf leerer Liste, CMake-Fehler Zeile ~1125).
+              # Ohne .git faellt x265 auf den Default X265_LATEST_TAG=0.0 zurueck.
+              if ($StripGit) { Remove-Item -Recurse -Force (Join-Path $Dest '.git') -ErrorAction SilentlyContinue }
             }
           }
 
@@ -305,7 +313,8 @@ jobs:
 
           # Externe Codec-Quellen: x264 + x265 (nur GPL).
           Clone-Repo 'https://code.videolan.org/videolan/x264.git' (Join-Path $env:SRC_DIR 'x264')
-          Clone-Repo 'https://bitbucket.org/multicoreware/x265_git.git' (Join-Path $env:SRC_DIR 'x265')
+          # x265: stable-Branch, .git danach entfernen (siehe Version.cmake-Hinweis).
+          Clone-Repo 'https://bitbucket.org/multicoreware/x265_git.git' (Join-Path $env:SRC_DIR 'x265') -Branch 'stable' -StripGit
 
           Write-Host "Header und externe Codec-Quellen bereit unter $env:SRC_DIR."
 
