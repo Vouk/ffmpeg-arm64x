@@ -424,6 +424,19 @@ function Invoke-X264Build {
     }
     & bash -lc "cd '$srcPosix' && make -j && make install" 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "x264 make/install schlug fehl (Exit $LASTEXITCODE)." }
+    # x264 installiert seine Import-Lib als libx264.dll.lib; FFmpegs MSVC-
+    # Wrapper uebersetzt -lx264 aber zu libx264.lib. Alias anlegen, damit
+    # FFmpegs pkg-config-Linktest die Lib findet (sonst LNK1181).
+    $libDir = Join-Path $Ctx.OutputDir 'lib'
+    $srcLib = Join-Path $libDir 'libx264.dll.lib'
+    if (Test-Path -LiteralPath $srcLib) {
+        foreach ($alias in @('libx264.lib', 'x264.lib')) {
+            Copy-Item -LiteralPath $srcLib -Destination (Join-Path $libDir $alias) -Force
+        }
+        Write-Host 'x264: Import-Lib-Alias libx264.lib/x264.lib angelegt.'
+    } else {
+        Write-Host 'WARN: libx264.dll.lib nicht gefunden; kein Alias angelegt.'
+    }
 }
 
 function Invoke-X265Build {
