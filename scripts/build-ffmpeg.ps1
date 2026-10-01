@@ -249,14 +249,29 @@ function Get-FFmpegBuildPlan {
     # Diagnose: zeigt im CI-Log, ob pkg-config x264/x265 findet und warum.
     # Laeuft nicht-fatal (|| true), damit set -e hier nicht abbricht.
     $pkgDiag = 'echo PKG_CONFIG_PATH=$PKG_CONFIG_PATH; which pkg-config pkgconf 2>/dev/null || true; for L in x264 x265 ffnvcodec; do echo -- $L --; pkg-config --exists $L && echo found || echo missing; pkg-config --cflags --libs $L 2>&1 || true; done'
+    # MSVC-Dependency-Generierung abschalten (CCDEP/CXXDEP leer).
+    # ffbuild/common.mak ruft je Objekt $(call CCDEP,CC) als eigenen Lauf auf;
+    # dessen awk-Programm kommt bei FFmpeg <= 8.1.3 mit kaputtem
+    # Backslash-Escaping an (awk: syntax error bei gsub(/\/, \"/\")) und
+    # bricht make ab. Die .d-Dateien dienen nur inkrementellen Rebuilds; CI
+    # baut immer frisch. Upstream hat diesen Pfad inzwischen ersetzt
+    # (FFmpeg-Commit cb5a63736a). Leere Werte auf der make-Kommandozeile
+    # ueberschreiben die Zuweisung aus config.mak, sodass $(call CCDEP,CC) zu
+    # nichts expandiert. Der Compile-Aufruf selbst bleibt unveraendert.
+    $makeOverrides = 'CCDEP= CXXDEP='
+
+    # Diagnose: zeigt die CCDEP-Zeile aus config.mak im CI-Log.
+    $cfgMakDiag = 'grep -n "^CCDEP" ffbuild/config.mak || true'
+
     $bashLines = @(
         'set -euo pipefail'
         $pkgPathLine
         $pkgDiag
         "cd $quotedSource"
         "./configure $quotedConfigureArgs"
-        "make -j$Jobs"
-        'make install'
+        $cfgMakDiag
+        "make -j$Jobs $makeOverrides"
+        "make install $makeOverrides"
     )
     $bashScript = ($bashLines -join "`n")
 
