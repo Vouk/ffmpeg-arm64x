@@ -77,6 +77,10 @@ function Get-ConfigureFlags {
     # ueberspringt FFmpegs "run a test binary"-Pruefung (sonst: C compiler
     # test failed / cl.exe is unable to create an executable file).
     $flags.Add('--enable-cross-compile')
+    # ARM64-NEON-Assembler via MSVC braeuchte gas-preprocessor.pl + armasm64
+    # (configure sonst: "GNU assembler not found, install/update
+    # gas-preprocessor"). Wie bei x264/x265 wird der reine C-Pfad gebaut.
+    $flags.Add('--disable-asm')
     $flags.Add('--enable-shared')
     $flags.Add('--disable-static')
     # FFmpeg kennt KEINE arch 'arm64ec' -- fuer beide Ansichten ist die
