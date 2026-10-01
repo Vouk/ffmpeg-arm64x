@@ -144,6 +144,24 @@ $ErrorActionPreference = 'Stop'
 # Hilfsfunktionen (reine Orchestrierungslogik, injizierbar für lokale Tests)
 # ---------------------------------------------------------------------------
 
+function ConvertTo-Msys2Path {
+    <#
+    .SYNOPSIS
+        Wandelt einen Windows-Pfad in einen MSYS2/POSIX-Pfad um
+        (z. B. C:\src\x264 -> /c/src/x264). Reine String-Transformation.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string] $Path)
+    $pp = $Path -replace '\\', '/'
+    if ($pp -match '^([A-Za-z]):(/.*)?$') {
+        $drive = $Matches[1].ToLowerInvariant()
+        $rest = if ($Matches[2]) { $Matches[2] } else { '/' }
+        $pp = "/$drive$rest"
+    }
+    return $pp
+}
+
 function Resolve-PathTester {
     <#
     .SYNOPSIS
@@ -375,11 +393,26 @@ function Invoke-X264Build {
 
     New-OutputDirectory -Path $Ctx.OutputDir
 
-    # x264s configure läuft unter MSYS2/bash mit der MSVC-Toolchain.
-    & bash -c "cd '$($Ctx.SourceDir)' && ./configure --prefix='$($Ctx.OutputDir)' --enable-shared --disable-cli"
-    if ($LASTEXITCODE -ne 0) { throw "x264 configure schlug fehl (Exit $LASTEXITCODE)." }
+    $srcPosix    = ConvertTo-Msys2Path -Path $Ctx.SourceDir
+    $prefixPosix = ConvertTo-Msys2Path -Path $Ctx.OutputDir
 
-    & bash -c "cd '$($Ctx.SourceDir)' && make -j && make install"
+    # ARM64-Cross-Kompilierung: ohne --host zielt configure auf den x64-Host
+    # und erzeugt x86_64-Code (vgl. vcpkg #22899). --host zwingt das Ziel auf
+    # ARM64; der Compiler ist das via %VCVARS% gereichte cl.exe. --disable-asm,
+    # da x264-arm64-asm gas/clang voraussetzt (nicht MSVC-armasm).
+    $ecCflag = if ($Ctx.Arch -eq 'arm64ec') { ' --extra-cflags=-arm64EC' } else { '' }
+    $configure = "./configure --prefix='$prefixPosix' --enable-shared --disable-cli " +
+                 "--host=aarch64-w64-mingw32 --disable-asm --enable-pic" + $ecCflag
+    & bash -lc "cd '$srcPosix' && $configure" 2>&1 | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) {
+        $cfgLog = Join-Path $Ctx.SourceDir 'config.log'
+        if (Test-Path -LiteralPath $cfgLog) {
+            Write-Host '----- x264 config.log (letzte 60 Zeilen) -----'
+            Get-Content -LiteralPath $cfgLog -Tail 60 | ForEach-Object { Write-Host $_ }
+        }
+        throw "x264 configure schlug fehl (Exit $LASTEXITCODE)."
+    }
+    & bash -lc "cd '$srcPosix' && make -j && make install" 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "x264 make/install schlug fehl (Exit $LASTEXITCODE)." }
 }
 
@@ -399,15 +432,34 @@ function Invoke-X265Build {
         $cmakeSource = $Ctx.SourceDir
     }
 
-    & cmake -S $cmakeSource -B $buildDir `
-        -DCMAKE_INSTALL_PREFIX="$($Ctx.OutputDir)" `
-        -DENABLE_SHARED=ON
+    # ARM64-Cross-Kompilierung mit MSVC ueber Ninja + dem via %VCVARS%
+    # gesetzten cl.exe (kein VS-ARM64-Generator auf dem Image). SYSTEM_NAME/
+    # PROCESSOR deklarieren das ARM64-Ziel; CROSS_COMPILE_ARM aktiviert x265s
+    # ARM-Pfad; ASSEMBLY aus (arm-asm braucht gas, nicht MSVC-armasm).
+    $cflags = if ($Ctx.Arch -eq 'arm64ec') { '/arm64EC' } else { '' }
+    $cmakeArgs = @(
+        '-S', $cmakeSource, '-B', $buildDir,
+        '-G', 'Ninja',
+        "-DCMAKE_INSTALL_PREFIX=$($Ctx.OutputDir)",
+        '-DCMAKE_BUILD_TYPE=Release',
+        '-DCMAKE_SYSTEM_NAME=Windows',
+        '-DCMAKE_SYSTEM_PROCESSOR=ARM64',
+        '-DCMAKE_C_COMPILER=cl',
+        '-DCMAKE_CXX_COMPILER=cl',
+        '-DENABLE_SHARED=ON',
+        '-DENABLE_CLI=OFF',
+        '-DENABLE_ASSEMBLY=OFF',
+        '-DCROSS_COMPILE_ARM=ON'
+    )
+    if ($cflags) {
+        $cmakeArgs += "-DCMAKE_C_FLAGS=$cflags"
+        $cmakeArgs += "-DCMAKE_CXX_FLAGS=$cflags"
+    }
+    & cmake @cmakeArgs 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "x265 cmake configure schlug fehl (Exit $LASTEXITCODE)." }
-
-    & cmake --build $buildDir --config Release
+    & cmake --build $buildDir 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "x265 cmake build schlug fehl (Exit $LASTEXITCODE)." }
-
-    & cmake --install $buildDir --config Release
+    & cmake --install $buildDir 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "x265 cmake install schlug fehl (Exit $LASTEXITCODE)." }
 }
 
