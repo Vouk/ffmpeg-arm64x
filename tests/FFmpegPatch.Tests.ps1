@@ -1,15 +1,15 @@
 <#
     Tests fuer scripts/lib/FFmpegPatch.psm1.
 
-    Die Fixtures sind Ausschnitte aus FFmpeg n8.1.3 (LF, Tabs in library.mak
+    Die Fixtures sind Ausschnitte aus FFmpeg n8.1.3 (LF; Tabs in library.mak
     als echte Tabs). Gedeckt sind beide Backports:
       * 93f653f95c  NVIDIA auf aarch64 Windows
-      * 8512161c81  makedef bekommt die .objs-Response-Datei
+      * 8512161c81  makedef bekommt die .objs-Response-Datei, und die Datei
+                    wird per make-eigenem $(file ...) geschrieben
 #>
 
 BeforeAll {
     Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) "scripts/lib/FFmpegPatch.psm1") -Force
-
     $script:TAB = [char]9
 
     function New-FFmpegTree {
@@ -58,70 +58,85 @@ BeforeAll {
         ) -join "`n"
         [System.IO.File]::WriteAllText((Join-Path $root "compat/windows/makedef"), $makedef)
 
+        $T = $script:TAB
         $lib = @(
-            "`$(SUBDIR)`$(SLIBNAME_WITH_MAJOR): `$(OBJS) `$(SHLIBOBJS) `$(SUBDIR)lib`$(NAME).ver",
-            "$($script:TAB)`$(SLIB_CREATE_DEF_CMD)",
+            "all-`$(CONFIG_STATIC): `$(SUBDIR)`$(LIBNAME)  `$(SUBDIR)lib`$(FULLNAME).pc",
+            "all-`$(CONFIG_SHARED): `$(SUBDIR)`$(SLIBNAME) `$(SUBDIR)lib`$(FULLNAME).pc",
+            "",
+            "LIBOBJS := `$(OBJS) `$(SHLIBOBJS) `$(STLIBOBJS) `$(SUBDIR)%.h.o `$(TESTOBJS)",
+            "",
+            "`$(SUBDIR)`$(LIBNAME): `$(OBJS) `$(STLIBOBJS)",
+            "$T`$(RM) `$@",
             "ifeq (`$(RESPONSE_FILES),yes)",
-            "$($script:TAB)`$(Q)echo `$`$(filter %.o,`$`$^) > `$`$@.objs",
-            "$($script:TAB)`$`$(call LINK,`$`$(call `$(NAME)LINK_SO_ARGS) `$`$(LD_O) @`$`$@.objs `$`$(call `$(NAME)LINK_EXTRA))",
+            "$T`$(Q)echo `$^ > `$@.objs",
+            "$T`$(AR) `$(ARFLAGS) `$(AR_O) @`$@.objs",
             "else",
-            "$($script:TAB)`$`$(call LINK,`$`$(call `$(NAME)LINK_SO_ARGS) `$`$(LD_O) `$`$(filter %.o,`$`$^) `$`$(call `$(NAME)LINK_EXTRA))",
+            "$T`$(AR) `$(ARFLAGS) `$(AR_O) `$^",
             "endif",
-            "$($script:TAB)`$(SLIB_EXTRA_CMD)",
+            "$T`$(RANLIB) `$@",
+            "",
+            "`$(SUBDIR)`$(SLIBNAME_WITH_MAJOR): `$(OBJS) `$(SHLIBOBJS) `$(SUBDIR)lib`$(NAME).ver",
+            "$T`$(SLIB_CREATE_DEF_CMD)",
+            "ifeq (`$(RESPONSE_FILES),yes)",
+            "$T`$(Q)echo `$`$(filter %.o,`$`$^) > `$`$@.objs",
+            "$T`$`$(call LINK,`$`$(call `$(NAME)LINK_SO_ARGS) `$`$(LD_O) @`$`$@.objs `$`$(call `$(NAME)LINK_EXTRA))",
+            "else",
+            "$T`$`$(call LINK,`$`$(call `$(NAME)LINK_SO_ARGS) `$`$(LD_O) `$`$(filter %.o,`$`$^) `$`$(call `$(NAME)LINK_EXTRA))",
+            "endif",
+            "$T`$(SLIB_EXTRA_CMD)",
             ""
         ) -join "`n"
         [System.IO.File]::WriteAllText((Join-Path $root "ffbuild/library.mak"), $lib)
 
         return $root
     }
+
+    function Get-Patched { param([string] $Root, [string] $RelPath) [System.IO.File]::ReadAllText((Join-Path $Root $RelPath)) }
 }
 
 Describe "Get-PatchedText" {
     It "meldet AlreadyPatched, wenn der Fix schon drin ist" {
-        $r = Get-PatchedText -Text "b" -Before "a" -After "b" -Name "t"
-        $r.Status | Should -Be "AlreadyPatched"
+        (Get-PatchedText -Text "b" -Before "a" -After "b" -Name "t").Status | Should -Be "AlreadyPatched"
     }
 
     It "bricht ab, wenn die Fundstelle fehlt" {
-        { Get-PatchedText -Text "nichts" -Before "a" -After "b" -Name "t" } |
-            Should -Throw -ExpectedMessage "*Backport*"
+        { Get-PatchedText -Text "nichts" -Before "a" -After "b" -Name "t" } | Should -Throw -ExpectedMessage "*Backport*"
     }
 
     It "bricht ab, wenn die Fundstelle nicht so oft vorkommt wie erwartet" {
-        { Get-PatchedText -Text "a" -Before "a" -After "b" -Name "t" -Occurrence 2 } |
-            Should -Throw -ExpectedMessage "*nicht eindeutig*"
+        { Get-PatchedText -Text "a" -Before "a" -After "b" -Name "t" -Occurrence 2 } | Should -Throw -ExpectedMessage "*nicht eindeutig*"
     }
 }
 
 Describe "Invoke-FFmpegSourcePatches" {
-    It "wendet alle fuenf Patches auf einen n8.1.3-Baum an" {
-        $root = New-FFmpegTree
-        $res = Invoke-FFmpegSourcePatches -SourceDir $root
-        $res.Count | Should -Be 5
-        @($res | Where-Object Status -eq "Patched").Count | Should -Be 5
+    It "wendet alle sieben Patches auf einen n8.1.3-Baum an" {
+        $res = Invoke-FFmpegSourcePatches -SourceDir (New-FFmpegTree)
+        $res.Count | Should -Be 7
+        @($res | Where-Object Status -eq "Patched").Count | Should -Be 7
     }
 
     It "ist idempotent" {
         $root = New-FFmpegTree
         Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
-        $after = [System.IO.File]::ReadAllText((Join-Path $root "configure"))
+        $before = @{}
+        foreach ($f in "configure", "compat/windows/makedef", "ffbuild/library.mak") { $before[$f] = Get-Patched $root $f }
         $res = Invoke-FFmpegSourcePatches -SourceDir $root
-        @($res | Where-Object Status -eq "AlreadyPatched").Count | Should -Be 5
-        [System.IO.File]::ReadAllText((Join-Path $root "configure")) | Should -BeExactly $after
+        @($res | Where-Object Status -eq "AlreadyPatched").Count | Should -Be 7
+        foreach ($f in $before.Keys) { Get-Patched $root $f | Should -BeExactly $before[$f] }
     }
 
     It "schaltet NVIDIA fuer win32 frei, ohne den x86-Zweig anzutasten" {
         $root = New-FFmpegTree
         Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
-        $t = [System.IO.File]::ReadAllText((Join-Path $root "configure"))
+        $t = Get-Patched $root "configure"
         $t | Should -Match ([regex]::Escape("        linux|mingw32*|mingw64*|win32|win64)"))
         ([regex]::Matches($t, [regex]::Escape("freebsd|mingw32*|mingw64*|win32|win64|linux|cygwin*)"))).Count | Should -Be 1
     }
 
-    It "ersetzt `$(OBJS) in beiden SLIB_CREATE_DEF_CMD-Zweigen" {
+    It "ersetzt OBJS in beiden SLIB_CREATE_DEF_CMD-Zweigen" {
         $root = New-FFmpegTree
         Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
-        $t = [System.IO.File]::ReadAllText((Join-Path $root "configure"))
+        $t = Get-Patched $root "configure"
         ([regex]::Matches($t, [regex]::Escape('makedef $(SUBDIR)lib$(NAME).ver $(SLIB_CREATE_DEF_INPUTS)'))).Count | Should -Be 2
         $t | Should -Not -Match ([regex]::Escape('makedef $(SUBDIR)lib$(NAME).ver $(OBJS)'))
     }
@@ -129,7 +144,7 @@ Describe "Invoke-FFmpegSourcePatches" {
     It "schreibt SLIB_CREATE_DEF_INPUTS in den config.mak-Heredoc" {
         $root = New-FFmpegTree
         Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
-        $t = [System.IO.File]::ReadAllText((Join-Path $root "configure"))
+        $t = Get-Patched $root "configure"
         $t | Should -Match ([regex]::Escape('SLIB_CREATE_DEF_INPUTS=@\$\$@.objs'))
         $t | Should -Match ([regex]::Escape('ifeq (\$(RESPONSE_FILES),yes)'))
     }
@@ -137,31 +152,48 @@ Describe "Invoke-FFmpegSourcePatches" {
     It "laesst makedef ein @response-Argument passieren" {
         $root = New-FFmpegTree
         Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
-        $t = [System.IO.File]::ReadAllText((Join-Path $root "compat/windows/makedef"))
+        $t = Get-Patched $root "compat/windows/makedef"
         $t | Should -Match ([regex]::Escape('object="${object#@}"'))
-        # Der @-Strip muss VOR der Existenzpruefung stehen.
         $t.IndexOf('object="${object#@}"') | Should -BeLessThan $t.IndexOf('! -f "$object"')
     }
 
-    It "erzeugt die .objs-Datei vor SLIB_CREATE_DEF_CMD" {
+    It "erkennt HAVE_BUILTIN_FILE ueber MAKE_VERSION, nicht ueber .FEATURES" {
+        # .FEATURES fuehrt "file" nicht auf; eine Pruefung darauf waere immer
+        # falsch und wuerde still auf die kaputte echo-Variante zurueckfallen.
         $root = New-FFmpegTree
         Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
-        $t = [System.IO.File]::ReadAllText((Join-Path $root "ffbuild/library.mak"))
-        $t.IndexOf('.objs') | Should -BeLessThan $t.IndexOf('$(SLIB_CREATE_DEF_CMD)')
-        # Tabs in den Rezeptzeilen muessen erhalten bleiben.
+        $t = Get-Patched $root "ffbuild/library.mak"
+        $t | Should -Match ([regex]::Escape('ifeq (4.0,$(firstword $(sort 4.0 $(MAKE_VERSION))))'))
+        $t | Should -Match ([regex]::Escape('HAVE_BUILTIN_FILE := yes'))
+        $t | Should -Match ([regex]::Escape('HAVE_BUILTIN_FILE := no'))
+        $t | Should -Not -Match ([regex]::Escape('.FEATURES'))
+        # Die Erkennung muss vor ihrer ersten Verwendung stehen.
+        $t.IndexOf('HAVE_BUILTIN_FILE := yes') | Should -BeLessThan $t.IndexOf('ifeq ($(HAVE_BUILTIN_FILE),yes)')
+    }
+
+    It "schreibt die Shared-Lib-Response-Datei per file-Funktion vor dem .def-Schritt" {
+        $root = New-FFmpegTree
+        Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
+        $t = Get-Patched $root "ffbuild/library.mak"
+        $t | Should -Match ([regex]::Escape('$$(file >$$@.objs,$$(filter %.o,$$^))'))
+        $t.IndexOf('$$(file >$$@.objs') | Should -BeLessThan $t.IndexOf('$(SLIB_CREATE_DEF_CMD)')
+        # Tab am Rezeptanfang muss erhalten bleiben.
         $t | Should -Match ([regex]::Escape("$($script:TAB)`$(SLIB_CREATE_DEF_CMD)"))
     }
 
-    It "schreibt .objs mit make-eigenem `$(file), nicht per echo-Umleitung" {
-        # Mit ~1000 Objekten reisst echo plus Umleitung die Kommandozeilen-
-        # Grenze; `$(file ...) schreibt ohne Shell.
+    It "schreibt die Static-Lib-Response-Datei per file-Funktion" {
         $root = New-FFmpegTree
         Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
-        $t = [System.IO.File]::ReadAllText((Join-Path $root "ffbuild/library.mak"))
-        $t | Should -Match ([regex]::Escape('$$(file >$$@.objs,$$(filter %.o,$$^))'))
-        $t | Should -Match ([regex]::Escape('ifneq (,$(filter file,$(.FEATURES)))'))
-        # Der $(file)-Zweig muss vor dem echo-Fallback stehen.
-        $t.IndexOf('$$(file >') | Should -BeLessThan $t.IndexOf('echo $$(filter')
+        $t = Get-Patched $root "ffbuild/library.mak"
+        $t | Should -Match ([regex]::Escape('$(file >$@.objs,$^)'))
+    }
+
+    It "behaelt die echo-Variante als Fallback fuer make < 4.0" {
+        $root = New-FFmpegTree
+        Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
+        $t = Get-Patched $root "ffbuild/library.mak"
+        $t | Should -Match ([regex]::Escape('$(Q)echo $$(filter %.o,$$^) > $$@.objs'))
+        $t | Should -Match ([regex]::Escape('$(Q)echo $^ > $@.objs'))
     }
 
     It "bricht ab, wenn eine Datei fehlt" {

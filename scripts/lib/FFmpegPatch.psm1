@@ -14,22 +14,22 @@
              ffnvcodec
 
       2. Commit 8512161c81 "configure: Pass the .objs response file to
-         makedef". compat/windows/makedef bekommt alle Objektdateien als
-         Argumente. libavcodec hat ~1000 Objekte, womit die Kommandozeile die
-         Windows-Grenze von 32767 Zeichen reisst; das letzte Argument kommt
-         abgeschnitten an und makedef bricht ab mit:
-             Object does not exist: libavc
-         Der Fix reicht stattdessen die bereits fuer den Link erzeugte
-         .objs-Response-Datei weiter.
+         makedef". Zwei Symptome derselben Ursache, der Windows-Grenze von
+         32767 Zeichen pro Kommandozeile:
+           - compat/windows/makedef bekam alle ~1000 Objekte von libavcodec
+             als Argumente; das letzte kam abgeschnitten an:
+                 Object does not exist: libavc
+           - die Response-Datei wurde per "echo ... > datei" erzeugt; auch
+             diese Zeile reisst die Grenze, die Umleitung am Ende fiel weg,
+             echo schrieb nach stdout und die Datei entstand nie:
+                 Object does not exist: libavcodec/avcodec-62.dll.objs
+             Deshalb schreibt make die Datei mit der eingebauten Funktion
+             $(file ...), die ohne Shell arbeitet.
 
-    Beide Patches sind idempotent: enthaelt der Quellbaum den Fix schon (z. B.
+    Alle Patches sind idempotent: enthaelt der Quellbaum den Fix schon (z. B.
     neuere FFmpeg-Version), bleibt die Datei unveraendert. Passt eine
     Fundstelle weder auf die alte noch auf die neue Form, wird abgebrochen --
     dann hat sich der Quellbaum geaendert und der Backport muss geprueft werden.
-
-    Hinweis: Der library.mak-Teil ist an 8.1.3 angepasst. Upstream verschiebt
-    dort einen Block, der zusaetzlich HAVE_BUILTIN_FILE kennt; das gibt es in
-    8.1.3 noch nicht.
 
     Requirements: 5.2, 5.4 (NVENC/NVDEC), 3.1 (Shared Libraries)
 #>
@@ -132,22 +132,63 @@ function Get-FFmpegSourcePatch {
         )
     }
 
-    # --- 8512161c81 (d): .objs vor dem .def-Schritt erzeugen --------------
-    # Zwei Aenderungen:
-    #  1. In 8.1.3 steht SLIB_CREATE_DEF_CMD vor dem ifeq-Block, der die
-    #     .objs-Datei schreibt. makedef braucht sie aber schon.
-    #  2. Die Datei darf nicht per echo plus Umleitung entstehen: make gibt
-    #     die Rezeptzeile an sh, und mit ~1000 Objekten (~35 kB) reisst
-    #     schon dieser Aufruf die 32767-Zeichen-Grenze. Die Umleitung am
-    #     Zeilenende fiel dabei weg, echo schrieb die Liste nach stdout und
-    #     die .objs-Datei entstand nie. GNU makes eingebaute Funktion
-    #     $(file ...) schreibt ohne Shell und kennt die Grenze nicht.
-    #     Upstream guckt dafuer auf HAVE_BUILTIN_FILE (configure-Pruefung,
-    #     die 8.1.3 nicht hat); wir pruefen .FEATURES, was dieselbe
-    #     Faehigkeit meldet und ohne configure-Aenderung auskommt
-    #     (GNU make >= 4.0).
+    # --- 8512161c81 (d1): HAVE_BUILTIN_FILE erkennen ----------------------
+    # Wortgleich mit Upstream. Die Pruefung nutzt die lexikalische Sortierung:
+    # steht 4.0 vor $(MAKE_VERSION), ist make mindestens 4.0 und kennt damit
+    # die eingebaute Funktion $(file ...). .FEATURES fuehrt "file" NICHT auf,
+    # taugt also nicht zur Erkennung.
     $patches += [pscustomobject]@{
-        Name   = '8512161c81d: .objs via $(file) vor SLIB_CREATE_DEF_CMD'
+        Name   = '8512161c81d1: HAVE_BUILTIN_FILE (make >= 4.0) erkennen'
+        File   = 'ffbuild/library.mak'
+        Before = ConvertFrom-PatchTemplate @(
+            'all-$(CONFIG_SHARED): $(SUBDIR)$(SLIBNAME) $(SUBDIR)lib$(FULLNAME).pc',
+            '',
+            'LIBOBJS := $(OBJS) $(SHLIBOBJS) $(STLIBOBJS) $(SUBDIR)%.h.o $(TESTOBJS)'
+        )
+        After  = ConvertFrom-PatchTemplate @(
+            'all-$(CONFIG_SHARED): $(SUBDIR)$(SLIBNAME) $(SUBDIR)lib$(FULLNAME).pc',
+            '',
+            '# Make <4.0 does not support the built-in file function;',
+            '# versions that do support it should use it, as it''s',
+            '# faster and isn''t bound by command line length limits.',
+            'ifeq (4.0,$(firstword $(sort 4.0 $(MAKE_VERSION))))',
+            'HAVE_BUILTIN_FILE := yes',
+            'else',
+            'HAVE_BUILTIN_FILE := no',
+            'endif',
+            '',
+            'LIBOBJS := $(OBJS) $(SHLIBOBJS) $(STLIBOBJS) $(SUBDIR)%.h.o $(TESTOBJS)'
+        )
+    }
+
+    # --- 8512161c81 (d2): statische Lib schreibt .objs ohne Shell ---------
+    # Greift nur mit --enable-static; wir bauen --disable-static. Trotzdem
+    # mitgepatcht, damit die Grenze dort nicht spaeter zuschlaegt.
+    $patches += [pscustomobject]@{
+        Name   = '8512161c81d2: statische Lib schreibt .objs via $(file)'
+        File   = 'ffbuild/library.mak'
+        Before = ConvertFrom-PatchTemplate @(
+            'ifeq ($(RESPONSE_FILES),yes)',
+            '<TAB>$(Q)echo $^ > $@.objs',
+            '<TAB>$(AR) $(ARFLAGS) $(AR_O) @$@.objs'
+        )
+        After  = ConvertFrom-PatchTemplate @(
+            'ifeq ($(RESPONSE_FILES),yes)',
+            'ifeq ($(HAVE_BUILTIN_FILE),yes)',
+            '<TAB>$(file >$@.objs,$^)',
+            'else',
+            '<TAB>$(Q)echo $^ > $@.objs',
+            'endif',
+            '<TAB>$(AR) $(ARFLAGS) $(AR_O) @$@.objs'
+        )
+    }
+
+    # --- 8512161c81 (d3): Shared-Lib: .objs via $(file), vor dem .def-Schritt
+    # Zwei Aenderungen in einem Block:
+    #  * .objs wird vor SLIB_CREATE_DEF_CMD erzeugt, weil makedef sie braucht.
+    #  * geschrieben wird per $(file ...) statt per echo-Umleitung.
+    $patches += [pscustomobject]@{
+        Name   = '8512161c81d3: Shared-Lib schreibt .objs via $(file) vor .def'
         File   = 'ffbuild/library.mak'
         Before = ConvertFrom-PatchTemplate @(
             '<TAB>$(SLIB_CREATE_DEF_CMD)',
@@ -157,7 +198,7 @@ function Get-FFmpegSourcePatch {
         )
         After  = ConvertFrom-PatchTemplate @(
             'ifeq ($(RESPONSE_FILES),yes)',
-            'ifneq (,$(filter file,$(.FEATURES)))',
+            'ifeq ($(HAVE_BUILTIN_FILE),yes)',
             '<TAB>$$(file >$$@.objs,$$(filter %.o,$$^))',
             'else',
             '<TAB>$(Q)echo $$(filter %.o,$$^) > $$@.objs',
