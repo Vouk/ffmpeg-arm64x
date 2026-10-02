@@ -111,8 +111,9 @@
          (sonst LGHT0094: Unresolved reference WixAction:.../BINPATH). -->
     <CustomAction Id="BINPATH" Property="BINPATH" Value="[INSTALLDIR]bin" Execute="immediate" />
 
-    <!-- Kein Aendern-Eintrag in der Systemsteuerung. -->
-    <Property Id="ARPNOMODIFY" Value="1" Secure="yes" />
+    <!-- Kein Aendern-Eintrag in der Systemsteuerung. ARPNOMODIFY wird bereits
+         von WixUI_InstallDir definiert; eine eigene Definition hier erzeugt
+         LGHT0091 (Duplicate symbol). Daher nicht erneut deklarieren. -->
 
     <!--
       ======================================================================
