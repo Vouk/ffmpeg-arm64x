@@ -1,16 +1,19 @@
 <#
 .SYNOPSIS
-    Verifiziert, dass alle erzeugten FFmpeg-DLLs sowie `ffmpeg.exe`/`ffprobe.exe`
-    echte ARM64X-Hybrid-Binärdateien sind (ARM64- UND ARM64EC-Ansicht) und dass
-    zu jeder DLL eine gleichnamige `.lib`-Import-Bibliothek existiert.
+    Verifiziert, dass die ARM64X-Forwarder-DLLs im Pure-Forwarder-Layout echte
+    ARM64X-Hybrid-Binärdateien sind (ARM64- UND ARM64EC-Ansicht). Die echten
+    Ansichts-DLLs (<base>_arm64.dll/<base>_arm64ec.dll) sind absichtlich NICHT
+    hybrid und werden übersprungen; von den Tools (ffmpeg.exe/ffprobe.exe,
+    native ARM64) wird nur die Präsenz geprüft.
 
 .DESCRIPTION
     Dieses Skript setzt Task 9.2 um (Design: Testing Strategy ->
     "ARM64X-Dual-View-Verifikation", Schnittstelle -> "Verifikation der
     ARM64X-Ansicht", Components -> C2 scripts/verify-arm64x.ps1). Nach dem
-    ARM64X-Merge (merge-arm64x.ps1) läuft es über ALLE erzeugten FFmpeg-DLLs
-    sowie `ffmpeg.exe`/`ffprobe.exe` und prüft je Datei per `dumpbin /headers`
-    den Marker `(ARM64X)` an der Maschinenzeile des PE-Headers:
+    ARM64X-Merge (merge-arm64x.ps1) läuft es über die ARM64X-Forwarder-DLLs
+    (die *.dll OHNE _arm64/_arm64ec-Suffix) und prüft je Datei per
+    `dumpbin /headers` den Marker `(ARM64X)` an der Maschinenzeile des
+    PE-Headers:
 
       - Ein ARM64X-Hybrid zeigt `AA64 machine (ARM64) (ARM64X)`.
       - Ein reines ARM64-Image zeigt nur `... machine (ARM64)` (ohne `(ARM64X)`).
@@ -256,21 +259,29 @@ function Invoke-DumpbinHeaders {
     return ($output | Out-String)
 }
 
-# Zu prüfende Ausführbaren neben allen erzeugten DLLs.
+# Ausführbaren, deren PRÄSENZ (nicht ihre ABI) erwartet wird. Im Pure-
+# Forwarder-Modell sind die Tools native ARM64-Binaries, KEINE ARM64X-Hybride.
 $script:ExpectedExecutables = @('ffmpeg.exe', 'ffprobe.exe')
 
 function Get-Arm64xTargetFiles {
     <#
     .SYNOPSIS
-        Ermittelt die zu verifizierenden Dateien in -BinDir: alle *.dll sowie
-        `ffmpeg.exe`/`ffprobe.exe` (reine Logik über einen injizierbaren Lister).
+        Ermittelt die als ARM64X-Hybrid zu verifizierenden Dateien in -BinDir:
+        NUR die Forwarder-DLLs (reine Logik über einen injizierbaren Lister).
     .DESCRIPTION
+        Im Pure-Forwarder-Layout liegen je Bibliothek DREI DLLs in -BinDir:
+          * <base>.dll           -- der ARM64X-Forwarder (MUSS Hybrid sein)
+          * <base>_arm64.dll     -- echte ARM64-DLL   (reines ARM64, KEIN Hybrid)
+          * <base>_arm64ec.dll   -- echte ARM64EC-DLL (reines ARM64EC, KEIN Hybrid)
+        Nur die Forwarder (ohne _arm64/_arm64ec-Suffix) werden auf (ARM64X)
+        geprüft. Die echten Ansichts-DLLs sind absichtlich NICHT hybrid und
+        werden übersprungen. Die Tools (ffmpeg.exe/ffprobe.exe) sind native
+        ARM64-Binaries; es wird nur ihre PRÄSENZ geprüft (fail-fast bei Fehlen),
+        nicht ihre ABI.
         Die Datei-Aufzählung erfolgt über den injizierbaren -FileLister, damit
-        die Auswahl-Logik ohne echtes Dateisystem testbar bleibt. Fehlt eine der
-        erwarteten Ausführbaren (ffmpeg.exe/ffprobe.exe), wird fail-fast mit
-        Benennung der Datei abgebrochen.
+        die Auswahl-Logik ohne echtes Dateisystem testbar bleibt.
     .OUTPUTS
-        [string[]] — vollständige Pfade der zu prüfenden Dateien.
+        [string[]] — Pfade der als ARM64X zu prüfenden Forwarder-DLLs.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -287,19 +298,18 @@ function Get-Arm64xTargetFiles {
 
     $targets = [System.Collections.Generic.List[string]]::new()
 
-    # Alle DLLs.
+    # NUR Forwarder-DLLs: *.dll ohne _arm64/_arm64ec-Suffix.
     foreach ($n in $names) {
-        if ($n -match '(?i)\.dll$') {
+        if ($n -match '(?i)\.dll$' -and $n -notmatch '(?i)_arm64(ec)?\.dll$') {
             $targets.Add((Join-Path $BinDir $n))
         }
     }
 
-    # Erwartete Ausführbaren; fehlt eine, fail-fast mit Benennung.
+    # Erwartete Tools: nur Präsenz prüfen (keine ARM64X-Prüfung ihrer ABI).
     foreach ($exe in $script:ExpectedExecutables) {
         if (-not $nameSet.Contains($exe)) {
             throw "ARM64X-Verifikation: erwartete Ausführbare '$exe' fehlt in '$BinDir'."
         }
-        $targets.Add((Join-Path $BinDir $exe))
     }
 
     return , ([string[]]$targets.ToArray())
@@ -375,12 +385,15 @@ function Invoke-Arm64xVerification {
     }
 
     # --- DLL/`.lib`-Paarung (R3.3) über Test-DllLibPairing -------------------
+    # Im Pure-Forwarder-Layout liegen KEINE .lib-Dateien in bin/ (die Import-
+    # Libs werden nur temporär für den Link erzeugt und wieder entfernt). Die
+    # Paarungsprüfung wird daher übersprungen, wenn keine .lib vorhanden ist --
+    # oder wenn der Aufrufer -SkipLibPairing setzt.
     $pairing = $null
-    if (-not $SkipLibPairing) {
-        $allNames = @(& $lister $BinDir)
+    $allNames = @(& $lister $BinDir)
+    $libNames = @($allNames | Where-Object { $_ -match '(?i)\.lib$' })
+    if (-not $SkipLibPairing -and $libNames.Count -gt 0) {
         $dllNames = @($allNames | Where-Object { $_ -match '(?i)\.dll$' })
-        $libNames = @($allNames | Where-Object { $_ -match '(?i)\.lib$' })
-
         $pairing = Test-DllLibPairing -DllName $dllNames -LibName $libNames
         if (-not $pairing.Success) {
             $failures.Add($pairing.Message)

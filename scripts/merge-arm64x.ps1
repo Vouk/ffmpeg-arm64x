@@ -365,6 +365,45 @@ function Invoke-ForwarderBuild {
     }
 }
 
+# Ausfuehrbaren, die (als native ARM64-Binaries) in die ARM64X-Verteilung
+# uebernommen werden. Sie sind KEINE ARM64X-Hybride: ein ARM64-Prozess startet
+# sie und laedt dabei die ARM64X-Forwarder-DLLs, die auf die _arm64-DLLs zeigen.
+$script:Arm64Executables = @('ffmpeg.exe', 'ffprobe.exe')
+
+function Copy-Arm64Executables {
+    <#
+    .SYNOPSIS
+        Kopiert die ARM64-Ausfuehrbaren (ffmpeg.exe/ffprobe.exe) in die
+        ARM64X-Ausgabe. Pure Logik ueber einen injizierbaren Copier/Tester.
+    .DESCRIPTION
+        Im Pure-Forwarder-Modell werden die nativen ARM64-Tools mitgeliefert.
+        Fehlt eine erwartete .exe im ARM64-bin, wird fail-fast abgebrochen.
+    .OUTPUTS
+        [string[]] -- die kopierten Ziel-Pfade.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory)][string] $Arm64Dir,
+        [Parameter(Mandatory)][string] $OutputDir,
+        [Parameter()][scriptblock] $Copier,
+        [Parameter()][scriptblock] $Tester
+    )
+    $test = if ($Tester) { $Tester } else { { param($x) Test-Path -LiteralPath $x } }
+    $copy = if ($Copier) { $Copier } else { { param($src,$dst) Copy-Item -LiteralPath $src -Destination $dst -Force } }
+    $copied = [System.Collections.Generic.List[string]]::new()
+    foreach ($exe in $script:Arm64Executables) {
+        $src = Join-Path $Arm64Dir $exe
+        $dst = Join-Path $OutputDir $exe
+        if (-not (& $test $src)) {
+            throw "ARM64X-Forwarder: erwartete ARM64-Ausfuehrbare fehlt: '$src'."
+        }
+        & $copy $src $dst
+        $copied.Add($dst)
+    }
+    return , ([string[]]$copied.ToArray())
+}
+
 function Invoke-Arm64xForwarder {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -403,6 +442,9 @@ function Invoke-Arm64xForwarder {
     foreach ($fwd in $plan.Forwarders) {
         Invoke-ForwarderBuild -Fwd $fwd -LinkExe $LinkExe -ClExe $ClExe
     }
+    # Native ARM64-Tools (ffmpeg.exe/ffprobe.exe) mitliefern.
+    $exes = Copy-Arm64Executables -Arm64Dir $Arm64Dir -OutputDir $OutputDir
+    Write-Host "ARM64X-Forwarder: $($exes.Count) ARM64-Ausfuehrbare uebernommen."
     Write-Host "ARM64X-Forwarder abgeschlossen: $OutputDir"
     return $plan
 }
