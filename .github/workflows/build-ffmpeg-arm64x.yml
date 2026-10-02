@@ -165,6 +165,13 @@ jobs:
             Write-Error "Cross-Toolset-Einstieg nicht gefunden: $vcvars (VC.Tools.ARM64 / v143 amd64_arm64-Cross-Tools fehlen)."
           }
 
+          # Nativer x64-Einstieg fuer die MSI-PATH-Custom-Action-DLL (x64,
+          # passend zum x64-Paket; laeuft auf ARM64 per Emulation).
+          $vcvarsX64 = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvarsX64)) {
+            Write-Error "x64-Toolset-Einstieg nicht gefunden: $vcvarsX64 (VC.Tools.x86.x64 fehlt)."
+          }
+
           # Windows-11-SDK adaptiv waehlen: alle 10.x-SDKs lesen, jene mit
           # Build-Nummer >= 22000 behalten, die hoechste waehlen (ARM64X setzt
           # ein Win11-SDK voraus).
@@ -194,8 +201,10 @@ jobs:
           $sdkVersion = (@($win11Sdks | Sort-Object -Descending)[0]).ToString()
 
           "VCVARS=$vcvars"              | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VCVARS_X64=$vcvarsX64"       | Out-File -FilePath $env:GITHUB_ENV -Append
           "WIN_SDK_VERSION=$sdkVersion" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "VCVARS          = $vcvars"
+          Write-Host "VCVARS_X64      = $vcvarsX64"
           Write-Host "WIN_SDK_VERSION = $sdkVersion (installierte 10.x-SDKs: $($installed -join ', '))"
 
       # ---------------------------------------------------------------------
@@ -444,6 +453,29 @@ jobs:
             -ConfigPath "$env:OUT_DIR\ffmpeg\gpl\arm64" -Variant gpl
           & "${{ github.workspace }}\scripts\verify-capabilities.ps1" `
             -ConfigPath "$env:OUT_DIR\ffmpeg\lgpl\arm64" -Variant lgpl
+
+      # ---------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # 12b. PATH-Custom-Action-DLL bauen (R10): Product.wxs bindet
+      #      installer/PathAction/PathAction.dll als Binary ein. Sie wird aus
+      #      PathAction.cpp + PathLogic.cpp mit PathAction.def gebaut. Native
+      #      Toolchain -> eigener cmd-Step mit vcvars (ARM64-Ziel, laeuft auf
+      #      dem ARM64-Installationsgeraet).
+      # ---------------------------------------------------------------------
+      - name: Build PATH custom-action DLL
+        shell: cmd
+        run: |
+          rem x64-CA-DLL, passend zum x64-Paket (candle -arch x64). Laeuft auf
+          rem ARM64-Windows per Emulation sowie nativ auf x64.
+          call "%VCVARS_X64%"
+          if errorlevel 1 exit /b 1
+          cd "%GITHUB_WORKSPACE%\installer\PathAction"
+          cl /nologo /LD /O2 /EHsc /DUNICODE /D_UNICODE ^
+            PathAction.cpp PathLogic.cpp ^
+            /Fe:PathAction.dll ^
+            /link /DEF:PathAction.def msi.lib advapi32.lib user32.lib
+          if errorlevel 1 exit /b 1
+          if not exist "PathAction.dll" exit /b 1
 
       # ---------------------------------------------------------------------
       # 13. MSI GPL + LGPL (R4.4/R8/R9/R10): je Variante heat harvest des
