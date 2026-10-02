@@ -54,8 +54,14 @@
 [CmdletBinding()]
 [OutputType([pscustomobject])]
 param(
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrEmpty()]
+    # Pfad zu FFmpegs config.h (statische Faehigkeitspruefung). Auf CI nutzen
+    # wir diesen Weg, weil ARM64-ffmpeg.exe auf dem x64-Runner nicht laeuft.
+    [Parameter()]
+    [string] $ConfigPath,
+
+    # Optional/Legacy: Pfad zu ffmpeg.exe (nur fuer die alte laufzeitbasierte
+    # Pruefung). Beim Dot-Sourcing in Tests irrelevant.
+    [Parameter()]
     [string] $FFmpegPath,
 
     [Parameter(Mandatory)]
@@ -148,7 +154,7 @@ function Get-FFmpegListedNames {
         }
     }
 
-    return , ([string[]]$names.ToArray())
+    return [string[]]$names.ToArray()
 }
 
 function Test-FFmpegCapabilities {
@@ -282,6 +288,97 @@ function Test-FFmpegCapabilities {
     }
 }
 
+function Get-FFmpegConfigFlags {
+    <#
+    .SYNOPSIS
+        Liest die aktivierten CONFIG_*-Schalter aus FFmpegs config.h (reine
+        Logik). Liefert die auf 1 gesetzten CONFIG_-Namen als String-Array
+        (ohne CONFIG_-Praefix, lowercase, Duplikate entfernt).
+    .DESCRIPTION
+        config.h enthaelt je Komponente eine Zeile "#define CONFIG_<NAME> 1"
+        oder "... 0". Keine Seiteneffekte. Rueckgabe als Array (nicht HashSet),
+        damit die PowerShell-Pipeline leere Mengen nicht zu $null entpackt.
+    .OUTPUTS
+        [string[]] -- aktivierte Komponentennamen (lowercase).
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string] $ConfigText)
+
+    $names = [System.Collections.Generic.List[string]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    if (-not [string]::IsNullOrWhiteSpace($ConfigText)) {
+        foreach ($raw in ($ConfigText -split "`r?`n")) {
+            $line = $raw.Trim()
+            if ($line -match '^#define\s+CONFIG_([A-Za-z0-9_]+)\s+1\s*$') {
+                $name = $Matches[1].ToLowerInvariant()
+                if ($seen.Add($name)) { $names.Add($name) }
+            }
+        }
+    }
+    return [string[]]$names.ToArray()
+}
+
+function Test-FFmpegConfigCapabilities {
+    <#
+    .SYNOPSIS
+        Statische Faehigkeitspruefung je Variante anhand von FFmpegs config.h
+        (reine Logik, kein ffmpeg-Aufruf). Spiegelt die Regeln von
+        Test-FFmpegCapabilities, nutzt aber die kompilierten CONFIG_-Schalter.
+    .DESCRIPTION
+        ARM64-ffmpeg.exe laeuft nicht auf dem x64-Runner; deshalb wird statt
+        der Laufzeitausgabe die Build-Konfiguration geprueft:
+          GPL : CONFIG_LIBX264_ENCODER und CONFIG_LIBX265_ENCODER = 1 (R6.1/6.2)
+          LGPL: beide NICHT gesetzt (R6.5)
+          beide: mind. ein *_AMF_ENCODER (R5.1/5.3), mind. ein *_NVENC_ENCODER
+                 (R5.2), und CONFIG_CUDA oder CONFIG_NVDEC (R5.4).
+    .OUTPUTS
+        PSCustomObject (Success, Variant, Violations, Message).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string] $ConfigText,
+        [Parameter(Mandatory)][ValidateSet('gpl','lgpl',IgnoreCase=$true)][string] $Variant
+    )
+
+    $variantKey = $Variant.ToLowerInvariant()
+    $flagItems = @(Get-FFmpegConfigFlags -ConfigText $ConfigText)
+    $flags = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]$flagItems, [System.StringComparer]::OrdinalIgnoreCase)
+    $violations = [System.Collections.Generic.List[string]]::new()
+
+    $hasX264 = $flags.Contains('libx264_encoder')
+    $hasX265 = $flags.Contains('libx265_encoder')
+    if ($variantKey -eq 'gpl') {
+        if (-not $hasX264) { $violations.Add("Fehlender H.264-Encoder 'libx264' in config.h (GPL, R6.1).") }
+        if (-not $hasX265) { $violations.Add("Fehlender H.265-Encoder 'libx265' in config.h (GPL, R6.2).") }
+    } else {
+        if ($hasX264) { $violations.Add("Unerwarteter GPL-Encoder 'libx264' in der LGPL-Variante (R6.5).") }
+        if ($hasX265) { $violations.Add("Unerwarteter GPL-Encoder 'libx265' in der LGPL-Variante (R6.5).") }
+    }
+
+    $amf   = @($flags | Where-Object { $_ -match '(?i)_amf_encoder$' })
+    if ($amf.Count -eq 0) { $violations.Add("Fehlende AMF-Hardware-Encoder in config.h (erwartet z. B. 'h264_amf', R5.1/R5.3).") }
+    $nvenc = @($flags | Where-Object { $_ -match '(?i)_nvenc_encoder$' })
+    if ($nvenc.Count -eq 0) { $violations.Add("Fehlende NVENC-Hardware-Encoder in config.h (erwartet z. B. 'h264_nvenc', R5.2).") }
+    $hasNvdec = $flags.Contains('cuda') -or $flags.Contains('nvdec') -or $flags.Contains('cuvid')
+    if (-not $hasNvdec) { $violations.Add("Fehlende NVDEC/CUDA-Hardware-Beschleunigung in config.h (erwartet CONFIG_CUDA/CONFIG_NVDEC, R5.4).") }
+
+    $success = ($violations.Count -eq 0)
+    $message = if ($success) {
+        "Statische Faehigkeitspruefung (config.h) fuer Variante '$variantKey' bestanden."
+    } else {
+        "Statische Faehigkeitspruefung (config.h) fuer Variante '$variantKey' fehlgeschlagen: " + ($violations -join ' ')
+    }
+    return [pscustomobject]@{
+        Success    = $success
+        Variant    = $variantKey
+        Violations = [string[]]$violations.ToArray()
+        Message    = $message
+    }
+}
+
 function Invoke-FFmpegCapability {
     <#
     .SYNOPSIS
@@ -313,21 +410,16 @@ function Invoke-FFmpegCapability {
 # ---------------------------------------------------------------------------
 
 if ($MyInvocation.InvocationName -ne '.') {
-    if (-not (Test-Path -LiteralPath $FFmpegPath)) {
-        throw "ffmpeg.exe nicht gefunden: '$FFmpegPath'."
+    # Statische Pruefung aus config.h (ARM64-ffmpeg.exe laeuft nicht auf x64).
+    if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+        throw "Parameter -ConfigPath (Pfad zu FFmpegs config.h) ist erforderlich."
+    }
+    if (-not (Test-Path -LiteralPath $ConfigPath)) {
+        throw "FFmpeg config.h nicht gefunden: '$ConfigPath'."
     }
 
-    # Echte ffmpeg-Ausgaben erfassen ...
-    $encodersText = Invoke-FFmpegCapability -FFmpegPath $FFmpegPath -Switch '-encoders'
-    $decodersText = Invoke-FFmpegCapability -FFmpegPath $FFmpegPath -Switch '-decoders'
-    $hwaccelsText = Invoke-FFmpegCapability -FFmpegPath $FFmpegPath -Switch '-hwaccels'
-
-    # ... und an die reine Assertion-Logik weiterreichen.
-    $result = Test-FFmpegCapabilities `
-        -EncodersText $encodersText `
-        -DecodersText $decodersText `
-        -HwaccelsText $hwaccelsText `
-        -Variant $Variant
+    $configText = [System.IO.File]::ReadAllText($ConfigPath)
+    $result = Test-FFmpegConfigCapabilities -ConfigText $configText -Variant $Variant
 
     Write-Host $result.Message
 

@@ -432,18 +432,18 @@ jobs:
           if errorlevel 1 exit /b 1
 
       # ---------------------------------------------------------------------
-      # 12. Faehigkeitspruefung (R5.1-R5.4/R6.1-R6.2/R6.5): je Variante die von
-      #     ffmpeg.exe gemeldeten Encoder/Decoder/Hardware-Faehigkeiten pruefen.
-      #     GPL listet libx264/libx265; LGPL NICHT x264/x265;
-      #     beide AMF + NVENC/NVDEC.
+      # 12. Faehigkeitspruefung (R5.1-R5.4/R6.1-R6.2/R6.5): STATISCH aus
+      #     FFmpegs config.h, da ARM64-ffmpeg.exe auf dem x64-Runner nicht
+      #     ausfuehrbar ist. config.h wird je Build-Prefix gesichert.
+      #     GPL hat libx264/libx265; LGPL NICHT x264/x265; beide AMF+NVENC/NVDEC.
       # ---------------------------------------------------------------------
       - name: Verify FFmpeg capabilities (GPL + LGPL)
         run: |
           $ErrorActionPreference = 'Stop'
           & "${{ github.workspace }}\scripts\verify-capabilities.ps1" `
-            -FFmpegPath "$env:OUT_DIR\ffmpeg\gpl\arm64x\bin\ffmpeg.exe" -Variant gpl
+            -ConfigPath "$env:OUT_DIR\ffmpeg\gpl\arm64\config.h" -Variant gpl
           & "${{ github.workspace }}\scripts\verify-capabilities.ps1" `
-            -FFmpegPath "$env:OUT_DIR\ffmpeg\lgpl\arm64x\bin\ffmpeg.exe" -Variant lgpl
+            -ConfigPath "$env:OUT_DIR\ffmpeg\lgpl\arm64\config.h" -Variant lgpl
 
       # ---------------------------------------------------------------------
       # 13. MSI GPL + LGPL (R4.4/R8/R9/R10): je Variante heat harvest des

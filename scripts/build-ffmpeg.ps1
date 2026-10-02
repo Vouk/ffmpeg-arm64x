@@ -407,5 +407,23 @@ foreach ($base in $dllBases) {
 }
 Write-Host "ARM64X-Vorbereitung: $defCount .def- und $libCount .lib-Datei(en) nach $libOut kopiert."
 
+# Statische Faehigkeitspruefung: FFmpegs ffbuild/config.h haelt je Komponente
+# "#define CONFIG_<NAME>_ENCODER 1|0" usw. Da ARM64-ffmpeg.exe auf dem x64-
+# Runner NICHT ausfuehrbar ist, pruefen wir die Faehigkeiten statisch aus
+# config.h. Der Quellbaum wird fuer alle vier Builds wiederverwendet, daher
+# config.h je (Variante,Arch)-Prefix sichern, bevor der naechste Build ihn
+# ueberschreibt.
+$cfgSrc = Get-ChildItem -LiteralPath $SourceDir -Recurse -Filter 'config.h' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match '(?i)[\\/]ffbuild[\\/]config\.h$' } | Select-Object -First 1
+if (-not $cfgSrc) {
+    $cfgSrc = Get-ChildItem -LiteralPath $SourceDir -Filter 'config.h' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+if ($cfgSrc) {
+    Copy-Item -LiteralPath $cfgSrc.FullName -Destination (Join-Path $plan.Prefix 'config.h') -Force
+    Write-Host "ARM64X-Vorbereitung: config.h aus '$($cfgSrc.FullName)' nach '$($plan.Prefix)' gesichert."
+} else {
+    Write-Host "WARN: ffbuild/config.h nicht gefunden -- statische Faehigkeitspruefung koennte scheitern."
+}
+
 Write-Host "FFmpeg-Build abgeschlossen: $($plan.Prefix)"
 return $plan
