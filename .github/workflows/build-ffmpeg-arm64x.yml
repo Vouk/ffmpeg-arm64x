@@ -441,9 +441,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           & "${{ github.workspace }}\scripts\verify-capabilities.ps1" `
-            -ConfigPath "$env:OUT_DIR\ffmpeg\gpl\arm64\config.h" -Variant gpl
+            -ConfigPath "$env:OUT_DIR\ffmpeg\gpl\arm64" -Variant gpl
           & "${{ github.workspace }}\scripts\verify-capabilities.ps1" `
-            -ConfigPath "$env:OUT_DIR\ffmpeg\lgpl\arm64\config.h" -Variant lgpl
+            -ConfigPath "$env:OUT_DIR\ffmpeg\lgpl\arm64" -Variant lgpl
 
       # ---------------------------------------------------------------------
       # 13. MSI GPL + LGPL (R4.4/R8/R9/R10): je Variante heat harvest des

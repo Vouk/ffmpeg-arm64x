@@ -410,20 +410,45 @@ function Invoke-FFmpegCapability {
 # ---------------------------------------------------------------------------
 
 if ($MyInvocation.InvocationName -ne '.') {
-    # Statische Pruefung aus config.h (ARM64-ffmpeg.exe laeuft nicht auf x64).
+    # Statische Pruefung aus FFmpegs config.h + config_components.h (ARM64-
+    # ffmpeg.exe laeuft nicht auf x64). -ConfigPath darf eine DATEI oder ein
+    # VERZEICHNIS sein; bei einem Verzeichnis werden config.h UND
+    # config_components.h (sofern vorhanden) zusammengefuehrt.
     if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-        throw "Parameter -ConfigPath (Pfad zu FFmpegs config.h) ist erforderlich."
+        throw "Parameter -ConfigPath (Datei oder Verzeichnis mit FFmpegs config*.h) ist erforderlich."
     }
     if (-not (Test-Path -LiteralPath $ConfigPath)) {
-        throw "FFmpeg config.h nicht gefunden: '$ConfigPath'."
+        throw "FFmpeg-Konfigurationspfad nicht gefunden: '$ConfigPath'."
     }
 
-    $configText = [System.IO.File]::ReadAllText($ConfigPath)
+    $configFiles = [System.Collections.Generic.List[string]]::new()
+    if (Test-Path -LiteralPath $ConfigPath -PathType Container) {
+        foreach ($name in @('config.h', 'config_components.h')) {
+            $cand = Join-Path $ConfigPath $name
+            if (Test-Path -LiteralPath $cand -PathType Leaf) { $configFiles.Add($cand) }
+        }
+        if ($configFiles.Count -eq 0) {
+            throw "Keine config.h/config_components.h in Verzeichnis '$ConfigPath' gefunden."
+        }
+    } else {
+        $configFiles.Add($ConfigPath)
+        # Falls die Datei config.h ist, auch das Nachbar-config_components.h lesen.
+        $sibling = Join-Path (Split-Path -Parent $ConfigPath) 'config_components.h'
+        if (($ConfigPath -match '(?i)[\\/]config\.h$') -and (Test-Path -LiteralPath $sibling -PathType Leaf)) {
+            $configFiles.Add($sibling)
+        }
+    }
+    $configText = ($configFiles | ForEach-Object { [System.IO.File]::ReadAllText($_) }) -join "`n"
+    Write-Host ("Statische Pruefung aus: " + ($configFiles -join ', '))
     $result = Test-FFmpegConfigCapabilities -ConfigText $configText -Variant $Variant
 
     Write-Host $result.Message
 
     if (-not $result.Success) {
+        # Diagnose: die tatsaechlich gefundenen codec-relevanten Schalter zeigen.
+        $found = @(Get-FFmpegConfigFlags -ConfigText $configText |
+            Where-Object { $_ -match '(?i)(libx26[45]|_amf|_nvenc|nvdec|cuda|cuvid)' } | Sort-Object)
+        Write-Host ("Gefundene relevante CONFIG_-Schalter (" + $found.Count + "): " + ($found -join ', '))
         # Fail-fast: klare Meldung mit den benannten Abweichungen.
         throw $result.Message
     }
