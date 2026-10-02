@@ -103,9 +103,13 @@
          Property beim aktiven Bestaetigen der Lizenz-Radiobuttons auf "1". -->
     <Property Id="LicenseAccepted" Value="0" />
 
-    <!-- BINPATH = [INSTALLDIR]\bin (R10.1). Als abgeleitete Property gesetzt,
-         damit die PATH-Custom-Action sie ueber CustomActionData erhaelt. -->
-    <SetProperty Id="BINPATH" Value="[INSTALLDIR]bin" After="CostFinalize" Sequence="execute" />
+    <!-- BINPATH = [INSTALLDIR]\bin (R10.1). Als Type-51-CustomAction gesetzt
+         (Property == Action-Id) und explizit in der InstallExecuteSequence
+         nach CostFinalize eingereiht (siehe unten). Die PATH-Nutzlast-Actions
+         erhalten [BINPATH] ueber ihre CustomActionData. Explizit statt
+         <SetProperty>, damit die Referenzen After="BINPATH" sauber linken
+         (sonst LGHT0094: Unresolved reference WixAction:.../BINPATH). -->
+    <CustomAction Id="BINPATH" Property="BINPATH" Value="[INSTALLDIR]bin" Execute="immediate" />
 
     <!-- Kein Aendern-Eintrag in der Systemsteuerung. -->
     <Property Id="ARPNOMODIFY" Value="1" Secure="yes" />
@@ -242,8 +246,9 @@
       ======================================================================
     -->
     <InstallExecuteSequence>
-      <!-- BINPATH wird via SetProperty After CostFinalize gesetzt; die
-           Nutzlast-Actions muessen danach laufen (Action-Id == Property-Id). -->
+      <!-- BINPATH (Property-Setter) zuerst nach CostFinalize; die Nutzlast-
+           Actions laufen danach (Action-Id == Property-Id). -->
+      <Custom Action="BINPATH" After="CostFinalize" />
       <Custom Action="SetRollbackData" After="BINPATH">NOT Installed</Custom>
       <Custom Action="SetPrependData" After="SetRollbackData">NOT Installed</Custom>
       <Custom Action="PathRollback" After="InstallFiles">NOT Installed</Custom>
