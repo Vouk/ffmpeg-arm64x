@@ -291,6 +291,45 @@ __declspec(dllexport) UINT __stdcall PathPrependDeferred(MSIHANDLE hInstall) {
 }
 
 // -------------------------------------------------------------------------
+// Immediate: den AKTUELLEN System-PATH lesen und als CustomActionData der
+// Rollback-Action (Property-Name "PathRollback") hinterlegen (R10.4).
+//
+// Diese Aktion laeuft VOR PathPrependDeferred und erfasst damit den PATH-
+// Vorwert, BEVOR er geaendert wird. Nur so hat die Rollback-Action bei einem
+// Abbruch ueberhaupt einen Wert zum Wiederherstellen. (Zuvor setzte eine
+// statische WiX-CustomAction die Rollback-Daten hart auf "" -> Rollback war
+// wirkungslos und ein fehlgeschlagener Install/Upgrade liess die PATH-
+// Aenderung stehen bzw. verlor den Eintrag.)
+//
+// Als IMMEDIATE-Aktion hat sie Zugriff auf Session-Properties und darf
+// MsiSetProperty aufrufen; das Setzen der Property "PathRollback" liefert den
+// Wert als CustomActionData an die gleichnamige rollback-Action.
+// -------------------------------------------------------------------------
+__declspec(dllexport) UINT __stdcall PathCaptureRollback(MSIHANDLE hInstall) {
+    std::wstring current_w;
+    bool is_expand = true;
+    if (!ReadSystemPath(current_w, is_expand)) {
+        // PATH nicht lesbar: Rollback-Daten leer lassen (Rollback wird dann zu
+        // einem No-op). Install nicht hieran scheitern lassen -- die eigentliche
+        // Aenderung in PathPrependDeferred prueft den Zugriff ohnehin erneut.
+        LogMessage(hInstall,
+                   L"PATH-Vorwert konnte nicht gelesen werden; Rollback-Daten leer.");
+        ::MsiSetPropertyW(hInstall, L"PathRollback", L"");
+        return ERROR_SUCCESS;
+    }
+
+    // Den vollstaendigen Vorwert als Rollback-CustomActionData hinterlegen.
+    const UINT rc = ::MsiSetPropertyW(hInstall, L"PathRollback", current_w.c_str());
+    if (rc != ERROR_SUCCESS) {
+        LogError(hInstall,
+                 L"Rollback-Daten (PATH-Vorwert) konnten nicht gesetzt werden.");
+        return ERROR_INSTALL_FAILURE;
+    }
+    LogMessage(hInstall, L"PATH-Vorwert fuer Rollback gesichert.");
+    return ERROR_SUCCESS;
+}
+
+// -------------------------------------------------------------------------
 // Deferred: Bin_Path bei Deinstallation aus dem System-PATH entfernen.
 //
 // CustomActionData-Layout:  <BinPath>

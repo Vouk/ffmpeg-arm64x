@@ -193,12 +193,17 @@
                   Value="[BINPATH]"
                   Execute="immediate" />
 
-    <!-- Immediate: CustomActionData fuer die Rollback-Action. Leer bedeutet
-         "nichts wiederherzustellen" (die DLL laesst PATH dann unveraendert). -->
+    <!-- Immediate (DLL): liest den AKTUELLEN System-PATH und legt ihn als
+         CustomActionData der Rollback-Action "PathRollback" ab. Laeuft VOR der
+         aendernden PathPrependDeferred-Action, erfasst also den echten Vorwert.
+         Ersetzt die fruehere statische Variante (Value="" -> Rollback war
+         wirkungslos). PathCaptureRollback setzt die Property "PathRollback"
+         selbst via MsiSetProperty. -->
     <CustomAction Id="SetRollbackData"
-                  Property="PathRollback"
-                  Value=""
-                  Execute="immediate" />
+                  BinaryKey="PathActionDll"
+                  DllEntry="PathCaptureRollback"
+                  Execute="immediate"
+                  Return="check" />
 
     <!-- Immediate: CustomActionData fuer die deferred Remove-Action. -->
     <CustomAction Id="SetRemoveData"

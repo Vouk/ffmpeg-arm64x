@@ -5,6 +5,7 @@
 ; wuerden __stdcall-Namen auf x86 dekoriert (z. B. _PathPrependDeferred@4).
 LIBRARY PathAction
 EXPORTS
+    PathCaptureRollback
     PathPrependDeferred
     PathRemoveDeferred
     PathRollback
