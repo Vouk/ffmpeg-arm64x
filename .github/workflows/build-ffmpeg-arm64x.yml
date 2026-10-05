@@ -289,19 +289,86 @@ jobs:
           Write-Host "FFmpeg-Quelle bereit: $ffmpegSrc"
 
       # ---------------------------------------------------------------------
+      #  5b. Cache-Schluessel fuer die externen Codecs (x264/x265) bestimmen:
+      #     Die gebauten x264/x265-Libs (out\deps\gpl) werden gecached und erst
+      #     dann neu gebaut, wenn es noetig ist. "Noetig" = die Codec-Quellen
+      #     oder die Build-Logik haben sich geaendert. Der Schluessel setzt sich
+      #     daher zusammen aus:
+      #       * dem aktuellen Tip-Commit von x264 (master) und x265 (stable),
+      #         guenstig per 'git ls-remote' ohne Klonen ermittelt,
+      #       * einem Hash von scripts\build-deps.ps1 (Build-Logik),
+      #       * dem Runner-OS.
+      #     Ein neuer Upstream-Commit oder eine geaenderte build-deps.ps1 aendert
+      #     den Schluessel -> Cache-Miss -> Neubau. Sonst Cache-Hit -> kein Neubau.
+      # ---------------------------------------------------------------------
+      - name: Resolve codec cache key (x264 / x265)
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Get-RemoteTip {
+            param([string] $Url, [string] $Ref)
+            # git ls-remote liefert "<sha>\t<ref>"; nur die SHA interessiert.
+            $line = (& git ls-remote $Url $Ref | Select-Object -First 1)
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($line)) {
+              Write-Error "git ls-remote fehlgeschlagen fuer $Url $Ref"
+            }
+            return ($line -split "\s+")[0]
+          }
+
+          $x264Sha = Get-RemoteTip 'https://code.videolan.org/videolan/x264.git' 'HEAD'
+          $x265Sha = Get-RemoteTip 'https://bitbucket.org/multicoreware/x265_git.git' 'refs/heads/stable'
+          # Der Cache umfasst auch out\deps\gpl\hwheaders (AMF + nv-codec).
+          # Deren Quellen fliessen daher ebenfalls in den Schluessel ein, damit
+          # ein Header-Update den Cache invalidiert.
+          $amfSha = Get-RemoteTip 'https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git' 'HEAD'
+          $nvSha  = Get-RemoteTip 'https://github.com/FFmpeg/nv-codec-headers.git' 'HEAD'
+
+          # Hash der Build-Logik (aendert sich der Build, muss neu gebaut werden).
+          $depsHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'scripts\build-deps.ps1')).Hash.Substring(0, 16)
+
+          $key = "deps-x264x265-$($env:RUNNER_OS)-x264_$($x264Sha.Substring(0,12))-x265_$($x265Sha.Substring(0,12))-amf_$($amfSha.Substring(0,12))-nv_$($nvSha.Substring(0,12))-logic_$depsHash"
+          Write-Host "x264 tip : $x264Sha"
+          Write-Host "x265 tip : $x265Sha"
+          Write-Host "AMF  tip : $amfSha"
+          Write-Host "nvcodec  : $nvSha"
+          Write-Host "Cache-Key: $key"
+
+          "DEPS_CACHE_KEY=$key"   | Out-File -FilePath $env:GITHUB_ENV -Append
+          "X264_TIP_SHA=$x264Sha" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "X265_TIP_SHA=$x265Sha" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # ---------------------------------------------------------------------
+      #  5c. Gebaute x264/x265-Libs aus dem Cache wiederherstellen (falls
+      #     vorhanden). restore-keys bewusst NICHT gesetzt: nur ein EXAKTER
+      #     Treffer (gleiche Quellen + gleiche Build-Logik) darf den Neubau
+      #     ueberspringen; alles andere baut sauber neu. cache-hit steuert die
+      #     folgenden Steps.
+      # ---------------------------------------------------------------------
+      - name: Restore x264/x265 cache
+        id: deps_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}\out\deps\gpl
+          key: ${{ env.DEPS_CACHE_KEY }}
+
+      # ---------------------------------------------------------------------
       #  6. Header-Preflight (R5.5) + externe Codec-Quellen (x264/x265):
-      #     Die Header (AMF + nv-codec-headers) und die externen Codec-Quellen
-      #     werden bezogen. Die eigentliche Preflight-Pruefung auf Vorhandensein
-      #     der Header (R5.5) und der Codec-Quellen (R6.4) uebernimmt
-      #     build-deps.ps1 im naechsten Step, VOR jeder Codec-Kompilierung.
+      #     Die Header (AMF + nv-codec-headers) werden IMMER bezogen (klein,
+      #     keine .pc-Caching-Komplexitaet). Die Codec-Quellen x264/x265 werden
+      #     NUR geklont, wenn der Cache nicht getroffen hat -- bei einem
+      #     Cache-Hit sind die fertigen Libs bereits da und ein Klonen/Bauen
+      #     entfaellt. Die Preflight-Pruefung (R5.5/R6.4) uebernimmt
+      #     build-deps.ps1 im naechsten Step.
       # ---------------------------------------------------------------------
       - name: Fetch headers + external codec sources
+        env:
+          DEPS_CACHE_HIT: ${{ steps.deps_cache.outputs.cache-hit }}
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path $env:SRC_DIR | Out-Null
 
           function Clone-Repo {
-            param([string] $Url, [string] $Dest, [string] $Branch, [switch] $StripGit)
+            param([string] $Url, [string] $Dest, [string] $Branch, [string] $Commit, [switch] $StripGit)
             if (-not (Test-Path -LiteralPath $Dest)) {
               $cargs = @('clone', '--depth=1')
               if ($Branch) { $cargs += @('--branch', $Branch) }
@@ -317,15 +384,22 @@ jobs:
           }
 
           # Hardware-Encoding-Header (beide Varianten): AMF + nv-codec-headers.
+          # Werden immer benoetigt (Header-Preflight + FFmpeg-Build).
           Clone-Repo 'https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git' (Join-Path $env:SRC_DIR 'AMF')
           Clone-Repo 'https://github.com/FFmpeg/nv-codec-headers.git' (Join-Path $env:SRC_DIR 'nv-codec-headers')
 
-          # Externe Codec-Quellen: x264 + x265 (nur GPL).
-          Clone-Repo 'https://code.videolan.org/videolan/x264.git' (Join-Path $env:SRC_DIR 'x264')
-          # x265: stable-Branch, .git danach entfernen (siehe Version.cmake-Hinweis).
-          Clone-Repo 'https://bitbucket.org/multicoreware/x265_git.git' (Join-Path $env:SRC_DIR 'x265') -Branch 'stable' -StripGit
+          if ($env:DEPS_CACHE_HIT -eq 'true') {
+            Write-Host "x264/x265-Cache getroffen ($env:DEPS_CACHE_KEY) - Quellen werden NICHT geklont, Neubau entfaellt."
+          }
+          else {
+            Write-Host "Kein x264/x265-Cache - Quellen klonen und bauen."
+            # Externe Codec-Quellen: x264 + x265 (nur GPL).
+            Clone-Repo 'https://code.videolan.org/videolan/x264.git' (Join-Path $env:SRC_DIR 'x264')
+            # x265: stable-Branch, .git danach entfernen (siehe Version.cmake-Hinweis).
+            Clone-Repo 'https://bitbucket.org/multicoreware/x265_git.git' (Join-Path $env:SRC_DIR 'x265') -Branch 'stable' -StripGit
+          }
 
-          Write-Host "Header und externe Codec-Quellen bereit unter $env:SRC_DIR."
+          Write-Host "Header und (falls noetig) externe Codec-Quellen bereit unter $env:SRC_DIR."
 
       # ---------------------------------------------------------------------
       #  7. Externe Libs bauen (R5.5/R6.1/R6.2/R6.4): x264/x265 je
@@ -334,21 +408,31 @@ jobs:
       #     Header oder eine Lib, Abbruch mit Benennung, keine Teil-Artefakte.
       #     Fuer GPL werden x264+x265 gebaut; LGPL hat keine externen Codecs.
       #     Der Build laeuft in der %VCVARS%-Umgebung (MSVC-Cross-Tools).
+      #
+      #     Bei Cache-Hit wird der GPL-x264/x265-Bau UEBERSPRUNGEN (die Libs
+      #     liegen bereits unter out\deps\gpl). Der LGPL-Lauf (nur
+      #     Header-Preflight, keine Codecs) laeuft weiterhin und ist billig.
       # ---------------------------------------------------------------------
       - name: Build external libraries (x264 / x265)
         shell: cmd
+        env:
+          DEPS_CACHE_HIT: ${{ steps.deps_cache.outputs.cache-hit }}
         run: |
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
-          rem GPL-Variante: x264 + x265 (R6.1/R6.2), je arm64 + arm64ec.
-          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-deps.ps1" ^
-            -Variant gpl ^
-            -X264SourceDir "%SRC_DIR%\x264" ^
-            -X265SourceDir "%SRC_DIR%\x265" ^
-            -OutputDir "%OUT_DIR%\deps\gpl" ^
-            -AmfHeaderPath "%AMF_HEADERS%" ^
-            -NvCodecHeaderPath "%NVCODEC_HEADERS%"
-          if errorlevel 1 exit /b 1
+          if "%DEPS_CACHE_HIT%"=="true" (
+            echo x264/x265-Cache getroffen - GPL-Codec-Bau wird uebersprungen.
+          ) else (
+            rem GPL-Variante: x264 + x265 (R6.1/R6.2), je arm64 + arm64ec.
+            pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-deps.ps1" ^
+              -Variant gpl ^
+              -X264SourceDir "%SRC_DIR%\x264" ^
+              -X265SourceDir "%SRC_DIR%\x265" ^
+              -OutputDir "%OUT_DIR%\deps\gpl" ^
+              -AmfHeaderPath "%AMF_HEADERS%" ^
+              -NvCodecHeaderPath "%NVCODEC_HEADERS%"
+            if errorlevel 1 exit /b 1
+          )
           rem LGPL-Variante: keine externen Codec-Libs (x264/x265 sind GPL-only,
           rem R6.5); nur der Header-Preflight wird ausgefuehrt.
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-deps.ps1" ^
@@ -357,6 +441,19 @@ jobs:
             -AmfHeaderPath "%AMF_HEADERS%" ^
             -NvCodecHeaderPath "%NVCODEC_HEADERS%"
           if errorlevel 1 exit /b 1
+
+      # ---------------------------------------------------------------------
+      #  7b. Gebaute x264/x265-Libs cachen -- NUR bei Cache-Miss (sonst sind sie
+      #     schon im Cache) und nur, wenn der Bau erfolgreich war (dieser Step
+      #     laeuft nicht, wenn ein vorheriger Step fehlschlug). Beim naechsten
+      #     Lauf mit gleichem Schluessel entfaellt der Neubau.
+      # ---------------------------------------------------------------------
+      - name: Save x264/x265 cache
+        if: steps.deps_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}\out\deps\gpl
+          key: ${{ env.DEPS_CACHE_KEY }}
 
       # ---------------------------------------------------------------------
       #  8. FFmpeg GPL beide Ansichten (R2.3/R4.1/R4.2):
