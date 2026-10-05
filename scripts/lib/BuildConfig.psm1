@@ -81,6 +81,15 @@ function Get-ConfigureFlags {
     # (configure sonst: "GNU assembler not found, install/update
     # gas-preprocessor"). Wie bei x264/x265 wird der reine C-Pfad gebaut.
     $flags.Add('--disable-asm')
+    # gfxcapture-Filter deaktivieren (beide Ansichten): Der Filter besteht aus
+    # vsrc_gfxcapture.o (C) + vsrc_gfxcapture_winrt.o (C++/WinRT). Unter ARM64EC
+    # exportiert das C++-WinRT-Objekt die vom C-Teil erwarteten Symbole nicht in
+    # der EC-Mangling-Form -> Linkfehler LNK2001 "unresolved external symbol
+    # #ff_gfxcapture_init (EC Symbol)" (CI 37317832940). gfxcapture ist eine
+    # Windows-Graphics-Capture-Bildschirmquelle, kein Kern-Codec; sie wird fuer
+    # BEIDE Architekturen deaktiviert, damit arm64 und arm64ec denselben
+    # Filter-/Symbolsatz haben (sauberer ARM64X-Merge je Basisname).
+    $flags.Add('--disable-filter=gfxcapture')
     $flags.Add('--enable-shared')
     $flags.Add('--disable-static')
     # FFmpeg kennt KEINE arch 'arm64ec' -- fuer beide Ansichten ist die
