@@ -41,6 +41,17 @@
     Verzeichnis mit den erzeugten ARM64X-Artefakten (die gemergten *.dll, *.lib
     sowie `ffmpeg.exe`/`ffprobe.exe`). Auf CI erforderlich.
 
+.PARAMETER ExpectedAbi
+    Erwartete Maschinen-ABI der zu prüfenden Binärdateien: 'ARM64X' (Standard,
+    gemergtes Hybrid-Ergebnis), 'ARM64' oder 'ARM64EC'. Mit 'ARM64' bzw.
+    'ARM64EC' lassen sich die VOR dem Merge erzeugten Einzel-Ansichten
+    (out\...\arm64\bin bzw. out\...\arm64ec\bin) daraufhin prüfen, dass die
+    arm64ec-Ansicht WIRKLICH als ARM64EC (`A641 machine (ARM64EC)`) und die
+    arm64-Ansicht als reines ARM64 kompiliert/gelinkt wurde — damit der
+    anschließende /MACHINE:ARM64X-Merge nachweislich aus zwei echten Ansichten
+    entsteht. Bei abweichender ABI bricht das Skript fail-fast ab und benennt
+    die betroffene Datei samt erwarteter und tatsächlicher ABI.
+
 .PARAMETER DumpbinExe
     Pfad zu `dumpbin.exe` (MSVC). Parametrisiert, damit der Aufruf lokal ohne
     echte Toolchain umgeleitet werden kann. Standard: 'dumpbin.exe' (aus dem
@@ -48,7 +59,9 @@
 
 .PARAMETER SkipLibPairing
     Wenn gesetzt, wird die `.lib`-Paarungsprüfung (Test-DllLibPairing)
-    übersprungen. Standardmäßig aktiv.
+    übersprungen. Für die Pre-Merge-Einzelansichten (ExpectedAbi ARM64/ARM64EC)
+    sinnvoll, da die gleichnamige .lib-Paarung erst für das gemergte
+    ARM64X-Ergebnis garantiert ist.
 
 .OUTPUTS
     [pscustomobject] mit dem Verifikationsergebnis (Success, geprüfte Dateien je
@@ -78,6 +91,10 @@ param(
     [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string] $BinDir,
+
+    [Parameter()]
+    [ValidateSet('ARM64X', 'ARM64', 'ARM64EC', IgnoreCase = $true)]
+    [string] $ExpectedAbi = 'ARM64X',
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
@@ -174,24 +191,40 @@ function Test-Arm64xHeader {
     <#
     .SYNOPSIS
         Gate: meldet genau dann Erfolg, wenn die erfasste `dumpbin /headers`-
-        Ausgabe eine ARM64X-Hybrid-Maschinenzeile zeigt (reine Logik, R2.4).
+        Ausgabe die ERWARTETE Maschinen-ABI zeigt (reine Logik, R2.4).
     .DESCRIPTION
-        Dünner Wrapper um Get-DumpbinMachineAbi. Der Gate matcht EXAKT `(ARM64X)`
-        an der Maschinenzeile: reines ARM64 und reines ARM64EC werden abgelehnt.
+        Dünner Wrapper um Get-DumpbinMachineAbi. Standardmäßig matcht der Gate
+        EXAKT `(ARM64X)` an der Maschinenzeile (das gemergte Hybrid-Ergebnis);
+        reines ARM64 und reines ARM64EC werden dann abgelehnt.
+
+        Über -ExpectedAbi kann stattdessen 'ARM64' oder 'ARM64EC' verlangt
+        werden, um die VOR dem Merge erzeugten Einzel-Ansichten zu prüfen:
+          * ExpectedAbi 'ARM64EC' akzeptiert NUR `A641 machine (ARM64EC)` und
+            weist insbesondere ein reines ARM64-Image (fehlgeschlagene
+            /arm64EC-Kompilierung) sowie ein bereits gemergtes ARM64X-Image ab.
+          * ExpectedAbi 'ARM64' akzeptiert NUR reines ARM64 (ohne ARM64EC- und
+            ohne ARM64X-Marker).
+
         Liefert ein Ergebnisobjekt mit der erkannten ABI und einer
-        menschenlesbaren Meldung, damit der Aufrufer bei fehlender ARM64X-Ansicht
-        fail-fast mit klarer Nennung der fehlenden Ansicht abbrechen kann (R2.5).
+        menschenlesbaren Meldung, damit der Aufrufer bei abweichender ABI
+        fail-fast mit klarer Nennung von erwarteter und tatsächlicher ABI
+        abbrechen kann (R2.5).
     .PARAMETER HeaderText
         Die erfasste `dumpbin /headers`-Ausgabe.
+    .PARAMETER ExpectedAbi
+        Erwartete ABI: 'ARM64X' (Standard), 'ARM64' oder 'ARM64EC'.
     .PARAMETER FileName
         Optionaler Name der geprüften Datei (nur für die Meldung, R2.5).
     .OUTPUTS
         PSCustomObject mit:
-          IsArm64x [bool]   — $true gdw ABI == 'ARM64X'
-          Abi      [string] — erkannte ABI (ARM64/ARM64EC/ARM64X/Unknown)
-          File     [string] — geprüfte Datei (falls angegeben)
-          Message  [string] — menschenlesbare Zusammenfassung; bei Fehler wird
-                              die fehlende Ansicht benannt
+          IsExpected  [bool]   — $true gdw erkannte ABI == ExpectedAbi
+          IsArm64x    [bool]   — $true gdw erkannte ABI == 'ARM64X'
+                                 (für Abwärtskompatibilität beibehalten)
+          Abi         [string] — erkannte ABI (ARM64/ARM64EC/ARM64X/Unknown)
+          ExpectedAbi [string] — die geforderte ABI
+          File        [string] — geprüfte Datei (falls angegeben)
+          Message     [string] — menschenlesbare Zusammenfassung; bei Fehler
+                                 werden erwartete und tatsächliche ABI benannt
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -201,17 +234,33 @@ function Test-Arm64xHeader {
         [string] $HeaderText,
 
         [Parameter()]
+        [ValidateSet('ARM64X', 'ARM64', 'ARM64EC', IgnoreCase = $true)]
+        [string] $ExpectedAbi = 'ARM64X',
+
+        [Parameter()]
         [string] $FileName = ''
     )
 
     $abi = Get-DumpbinMachineAbi -HeaderText $HeaderText
+    # Normalisieren: Get-DumpbinMachineAbi liefert kanonische Großschreibung.
+    $expected = switch ($ExpectedAbi.ToUpperInvariant()) {
+        'ARM64X'  { 'ARM64X' }
+        'ARM64EC' { 'ARM64EC' }
+        default   { 'ARM64' }
+    }
+    $isExpected = ($abi -eq $expected)
     $isArm64x = ($abi -eq 'ARM64X')
     $label = if ([string]::IsNullOrWhiteSpace($FileName)) { 'Binärdatei' } else { "'$FileName'" }
 
-    if ($isArm64x) {
-        $message = "$label ist ein ARM64X-Hybrid (enthält ARM64- und ARM64EC-Ansicht)."
+    if ($isExpected) {
+        $detail = switch ($expected) {
+            'ARM64X'  { 'ein ARM64X-Hybrid (enthält ARM64- und ARM64EC-Ansicht)' }
+            'ARM64EC' { 'ein reines ARM64EC-Image (Pre-Merge-EC-Ansicht)' }
+            default   { 'ein reines ARM64-Image (Pre-Merge-ARM64-Ansicht)' }
+        }
+        $message = "$label ist $detail."
     }
-    else {
+    elseif ($expected -eq 'ARM64X') {
         # R2.5: fehlende Ansicht konkret benennen. Ein ARM64X-Hybrid benötigt
         # beide Ansichten; welche fehlt, ergibt sich aus der erkannten ABI.
         $missing = switch ($abi) {
@@ -223,12 +272,20 @@ function Test-Arm64xHeader {
                    "es fehlt die $missing. Der ARM64X-Marker '(ARM64X)' " +
                    "an der Maschinenzeile ist nicht vorhanden."
     }
+    else {
+        # Pre-Merge-Einzelansicht mit falscher ABI (z. B. 'arm64ec'-Build, der
+        # in Wahrheit als reines ARM64 herauskam -> /arm64EC hat nicht gegriffen).
+        $message = "$label hat nicht die erwartete ABI: erwartet $expected, " +
+                   "tatsächlich $abi (Maschinenzeile aus 'dumpbin /headers')."
+    }
 
     return [pscustomobject]@{
-        IsArm64x = $isArm64x
-        Abi      = $abi
-        File     = $FileName
-        Message  = $message
+        IsExpected  = $isExpected
+        IsArm64x    = $isArm64x
+        Abi         = $abi
+        ExpectedAbi = $expected
+        File        = $FileName
+        Message     = $message
     }
 }
 
@@ -355,6 +412,9 @@ function Invoke-Arm64xVerification {
     param(
         [Parameter(Mandatory)] [string] $BinDir,
         [Parameter(Mandatory)] [scriptblock] $HeaderProvider,
+        [Parameter()]
+        [ValidateSet('ARM64X', 'ARM64', 'ARM64EC', IgnoreCase = $true)]
+        [string] $ExpectedAbi = 'ARM64X',
         [switch] $SkipLibPairing,
         [scriptblock] $FileLister
     )
@@ -369,17 +429,18 @@ function Invoke-Arm64xVerification {
     foreach ($file in $targets) {
         $leaf = Split-Path -Path $file -Leaf
         $headerText = & $HeaderProvider $file
-        $gate = Test-Arm64xHeader -HeaderText $headerText -FileName $leaf
+        $gate = Test-Arm64xHeader -HeaderText $headerText -ExpectedAbi $ExpectedAbi -FileName $leaf
 
         $checked.Add([pscustomobject]@{
-            File     = $leaf
-            Path     = $file
-            Abi      = $gate.Abi
-            IsArm64x = $gate.IsArm64x
+            File       = $leaf
+            Path       = $file
+            Abi        = $gate.Abi
+            IsExpected = $gate.IsExpected
+            IsArm64x   = $gate.IsArm64x
         })
 
-        if (-not $gate.IsArm64x) {
-            # R2.5: betroffene Datei + fehlende Ansicht benennen.
+        if (-not $gate.IsExpected) {
+            # R2.5: betroffene Datei + erwartete/tatsächliche ABI benennen.
             $failures.Add($gate.Message)
         }
     }
@@ -401,22 +462,28 @@ function Invoke-Arm64xVerification {
     }
 
     $success = ($failures.Count -eq 0)
+    $abiLabel = switch ($ExpectedAbi.ToUpperInvariant()) {
+        'ARM64X'  { 'ARM64X-Hybride' }
+        'ARM64EC' { 'reine ARM64EC-Images (Pre-Merge-EC-Ansicht)' }
+        default   { 'reine ARM64-Images (Pre-Merge-ARM64-Ansicht)' }
+    }
     if ($success) {
-        $message = "ARM64X-Verifikation bestanden: $($checked.Count) Datei(en) " +
-                   "sind ARM64X-Hybride" +
+        $message = "ABI-Verifikation bestanden: $($checked.Count) Datei(en) " +
+                   "sind $abiLabel" +
                    $(if (-not $SkipLibPairing) { " und alle DLLs besitzen eine gleichnamige .lib." } else { "." })
     }
     else {
-        $message = "ARM64X-Verifikation fehlgeschlagen: " + ($failures -join ' ')
+        $message = "ABI-Verifikation fehlgeschlagen (erwartet $($ExpectedAbi.ToUpperInvariant())): " + ($failures -join ' ')
     }
 
     return [pscustomobject]@{
-        Success  = $success
-        BinDir   = $BinDir
-        Checked  = [pscustomobject[]]$checked.ToArray()
-        Failures = [string[]]$failures.ToArray()
-        Pairing  = $pairing
-        Message  = $message
+        Success     = $success
+        BinDir      = $BinDir
+        ExpectedAbi = $ExpectedAbi.ToUpperInvariant()
+        Checked     = [pscustomobject[]]$checked.ToArray()
+        Failures    = [string[]]$failures.ToArray()
+        Pairing     = $pairing
+        Message     = $message
     }
 }
 
@@ -448,8 +515,14 @@ if ($MyInvocation.InvocationName -ne '.') {
         Invoke-DumpbinHeaders -DumpbinExe $DumpbinExe -FilePath $FilePath
     }
 
+    # Die DLL/.lib-Paarung ist nur für das gemergte ARM64X-Ergebnis garantiert.
+    # Für die Pre-Merge-Einzelansichten (ExpectedAbi ARM64/ARM64EC) wird sie
+    # daher automatisch übersprungen, sofern der Aufrufer sie nicht ohnehin
+    # explizit abgeschaltet hat.
+    $skipPairing = $SkipLibPairing -or ($ExpectedAbi.ToUpperInvariant() -ne 'ARM64X')
+
     $result = Invoke-Arm64xVerification -BinDir $BinDir `
-        -HeaderProvider $headerProvider -SkipLibPairing:$SkipLibPairing
+        -HeaderProvider $headerProvider -ExpectedAbi $ExpectedAbi -SkipLibPairing:$skipPairing
 
     foreach ($c in $result.Checked) {
         Write-Host ("  {0,-24} {1}" -f $c.File, $c.Abi)

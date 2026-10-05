@@ -395,6 +395,39 @@ jobs:
           if errorlevel 1 exit /b 1
 
       # ---------------------------------------------------------------------
+      #  9b. Pre-Merge-ABI-Verifikation (R2.4/R2.5): BEVOR gemergt wird, jede
+      #      Einzel-Ansicht daraufhin pruefen, dass sie WIRKLICH die erwartete
+      #      ABI hat — die arm64-Ansicht reines ARM64, die arm64ec-Ansicht
+      #      reines ARM64EC (`A641 machine (ARM64EC)`). Damit ist nachgewiesen,
+      #      dass der folgende /MACHINE:ARM64X-Merge aus zwei echten Ansichten
+      #      entsteht und die arm64ec-Kompilierung (cl /arm64EC) tatsaechlich
+      #      ARM64EC-Objekte erzeugt hat (nicht still auf reines ARM64
+      #      zurueckgefallen ist). .lib-Paarung wird hier NICHT verlangt (sie
+      #      ist erst fuer das gemergte Ergebnis garantiert, Step 11).
+      # ---------------------------------------------------------------------
+      - name: Verify pre-merge ABI views (GPL + LGPL)
+        shell: cmd
+        run: |
+          call "%VCVARS%"
+          if errorlevel 1 exit /b 1
+          rem GPL: arm64-Ansicht MUSS reines ARM64 sein.
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\verify-arm64x.ps1" ^
+            -BinDir "%OUT_DIR%\ffmpeg\gpl\arm64\bin" -ExpectedAbi ARM64
+          if errorlevel 1 exit /b 1
+          rem GPL: arm64ec-Ansicht MUSS reines ARM64EC sein.
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\verify-arm64x.ps1" ^
+            -BinDir "%OUT_DIR%\ffmpeg\gpl\arm64ec\bin" -ExpectedAbi ARM64EC
+          if errorlevel 1 exit /b 1
+          rem LGPL: arm64-Ansicht MUSS reines ARM64 sein.
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\verify-arm64x.ps1" ^
+            -BinDir "%OUT_DIR%\ffmpeg\lgpl\arm64\bin" -ExpectedAbi ARM64
+          if errorlevel 1 exit /b 1
+          rem LGPL: arm64ec-Ansicht MUSS reines ARM64EC sein.
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\verify-arm64x.ps1" ^
+            -BinDir "%OUT_DIR%\ffmpeg\lgpl\arm64ec\bin" -ExpectedAbi ARM64EC
+          if errorlevel 1 exit /b 1
+
+      # ---------------------------------------------------------------------
       # 10. ARM64X-Merge (R2.3/R3.2): je Variante die arm64- und arm64ec-Ansicht
       #     zu ARM64X-Hybriden verschmelzen (link.exe /MACHINE:ARM64X fuer DLLs,
       #     lib.exe /MACHINE:ARM64X fuer .lib). merge-arm64x.ps1 paart je
