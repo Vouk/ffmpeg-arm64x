@@ -248,14 +248,29 @@ function Test-Arm64xHeader {
         'ARM64EC' { 'ARM64EC' }
         default   { 'ARM64' }
     }
-    $isExpected = ($abi -eq $expected)
+
+    # ABI-Akzeptanz:
+    #  * ARM64EC erwartet: ein mit cl /arm64EC + link /machine:arm64ec erzeugtes
+    #    FFmpeg-Shared-DLL meldet in 'dumpbin /headers' die Maschinenzeile
+    #    "AA64 machine (ARM64) (ARM64X)" -- also den (ARM64X)-Marker, NICHT
+    #    "A641 (ARM64EC)". (A641 tritt bei anders gelinkten Objekten/Libs auf.)
+    #    Beide Formen (ARM64EC und ARM64X) sind gueltige EC-faehige Images;
+    #    abzulehnen ist allein reines ARM64 (= /arm64EC hat nicht gegriffen).
+    #    Daher gilt die EC-Erwartung als erfuellt bei ABI == ARM64EC ODER ARM64X.
+    #  * ARM64 erwartet: nur reines ARM64 (ohne EC-/X-Marker).
+    #  * ARM64X erwartet: exakt ARM64X.
+    $isExpected = switch ($expected) {
+        'ARM64EC' { $abi -eq 'ARM64EC' -or $abi -eq 'ARM64X' }
+        'ARM64'   { $abi -eq 'ARM64' }
+        default   { $abi -eq 'ARM64X' }
+    }
     $isArm64x = ($abi -eq 'ARM64X')
     $label = if ([string]::IsNullOrWhiteSpace($FileName)) { 'Binärdatei' } else { "'$FileName'" }
 
     if ($isExpected) {
         $detail = switch ($expected) {
             'ARM64X'  { 'ein ARM64X-Hybrid (enthält ARM64- und ARM64EC-Ansicht)' }
-            'ARM64EC' { 'ein reines ARM64EC-Image (Pre-Merge-EC-Ansicht)' }
+            'ARM64EC' { "ein EC-faehiges Image (erkannte ABI: $abi) -- Pre-Merge-EC-Ansicht" }
             default   { 'ein reines ARM64-Image (Pre-Merge-ARM64-Ansicht)' }
         }
         $message = "$label ist $detail."

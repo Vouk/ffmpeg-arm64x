@@ -201,10 +201,15 @@ Describe 'Test-Arm64xHeader - Pre-Merge-Gate (ExpectedAbi ARM64EC)' {
         $g.Abi        | Should -Be 'ARM64'
     }
 
-    It 'lehnt ein bereits gemergtes ARM64X-Image ab' {
+    It 'akzeptiert ein ARM64X-Image (cl /arm64EC-DLLs melden den (ARM64X)-Marker)' {
+        # Ein mit cl /arm64EC + link /machine:arm64ec erzeugtes FFmpeg-Shared-DLL
+        # meldet in dumpbin die Maschinenzeile "AA64 machine (ARM64) (ARM64X)".
+        # Das ist ein gueltiges EC-faehiges Image; die EC-Erwartung gilt daher
+        # auch bei erkannter ABI ARM64X als erfuellt. Nur reines ARM64 (siehe
+        # vorheriger Test) wird abgelehnt.
         $g = Test-Arm64xHeader -HeaderText $script:HeaderArm64x -ExpectedAbi 'ARM64EC' -FileName 'avcodec.dll'
-        $g.IsExpected | Should -BeFalse
-        $g.Message    | Should -Match 'erwartet ARM64EC'
+        $g.IsExpected | Should -BeTrue -Because $g.Message
+        $g.Abi        | Should -Be 'ARM64X'
     }
 }
 
