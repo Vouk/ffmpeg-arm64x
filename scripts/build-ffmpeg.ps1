@@ -263,29 +263,31 @@ function Get-FFmpegBuildPlan {
     # Diagnose: zeigt die CCDEP-Zeile aus config.mak im CI-Log.
     $cfgMakDiag = 'grep -n "^CCDEP" ffbuild/config.mak || true'
 
-    # ARM64EC-Erzwingung (nur arm64ec): FFmpegs configure VERWIRFT -arm64EC aus
-    # --extra-cflags und -MACHINE:arm64EC aus --extra-ldflags still, weil seine
-    # check_cflags/check_ldflags-Probekompilate/-links (reines ARM64) mit diesen
-    # Flags fehlschlagen -- die Flags landen daher NICHT in config.mak. Dadurch
-    # kamen die arm64ec-DLLs in zwei CI-Laeufen als reines ARM64 heraus.
+    # WICHTIG - sauberer Rebuild je (Variante, Arch): Der FFmpeg-Quellbaum wird
+    # fuer ALLE vier Builds (gpl/lgpl x arm64/arm64ec) WIEDERVERWENDET. make
+    # entscheidet anhand der Zeitstempel, ob eine .o neu gebaut wird. Nach dem
+    # arm64-Build existieren alle Objekte bereits und sind neuer als die
+    # Quellen -- der nachfolgende arm64ec-Build kompiliert daher NICHT neu,
+    # sondern verlinkt die ARM64-Objekte des vorherigen Laufs nur neu. Ergebnis
+    # (in CI 37290208404 / 37294268893 / 37298727949 beobachtet): die
+    # arm64ec-DLLs blieben reines ARM64, obwohl -arm64EC in config.mak stand.
     #
-    # Zuverlaessige Loesung: die Flags NACH configure direkt in ffbuild/config.mak
-    # anhaengen, unter Umgehung jeder configure-Validierung:
-    #   * CFLAGS  += -arm64EC         -> jede Objekt-Kompilierung wird ARM64EC
-    #   * LDFLAGS += -MACHINE:arm64EC -> jeder Link (DLL via LINK_SO_ARGS =
-    #                                    SHFLAGS LDFLAGS LDSOFLAGS, und exe)
-    #                                    zielt auf ARM64EC
-    # Beide Variablen werden von JEDER Compile-/Link-Regel genutzt (siehe
-    # ffbuild/common.mak bzw. library.mak LINK_SO_ARGS), daher ist die
-    # Erzwingung vollstaendig und kann nicht wegvalidiert werden. Die
-    # Append-Zeilen stehen zwischen configure und make.
-    # Mit "+=" anhaengen (NICHT "CFLAGS=$(CFLAGS) ...": das waere eine
-    # rekursive Selbstreferenz, die make mit "references itself" abbricht).
-    # config.mak nutzt rekursive Zuweisungen (VAR=...), daher ergaenzt "+="
-    # den bestehenden Wert korrekt.
+    # Loesung: vor configure IMMER distclean, damit jede (Variante,Arch)-
+    # Kombination mit frischen Objekten und den fuer sie geltenden Flags baut.
+    # Beim allerersten Lauf gibt es noch keine config.mak -> distclean ist dann
+    # ein No-op; daher "|| true" (set -e nicht ausloesen).
+    $distclean = 'make distclean 2>/dev/null || true'
+
+    # ARM64EC-Flags: configure legt -arm64EC in CFLAGS und -MACHINE:arm64EC in
+    # LDFLAGS bereits korrekt in config.mak ab (verifiziert in CI: config.mak
+    # Zeile CFLAGS=... -arm64EC ... und LDFLAGS=... -MACHINE:arm64EC ...). Zur
+    # Sicherheit haengen wir sie zusaetzlich per "+=" an -- schadet nicht und
+    # haelt die Erzwingung robust, falls configure sie in einer anderen
+    # FFmpeg-Version doch verwirft. "+=" statt "=$(CFLAGS) ..." (letzteres waere
+    # eine rekursive Selbstreferenz, die make abbricht).
     $ecForce = if ($archKey -eq 'arm64ec') {
         @(
-            '# ARM64EC erzwingen: Flags direkt in config.mak anhaengen (configure verwirft sie sonst).'
+            '# ARM64EC absichern: Flags zusaetzlich an config.mak anhaengen.'
             "printf '\nCFLAGS += -arm64EC\nLDFLAGS += -MACHINE:arm64EC\n' >> ffbuild/config.mak"
             'echo "---- config.mak CFLAGS/LDFLAGS nach ARM64EC-Append ----"'
             'grep -nE "^(CFLAGS|LDFLAGS)" ffbuild/config.mak || true'
@@ -297,6 +299,7 @@ function Get-FFmpegBuildPlan {
         $pkgPathLine
         $pkgDiag
         "cd $quotedSource"
+        $distclean
         "./configure $quotedConfigureArgs"
         $cfgMakDiag
     ) + $ecForce + @(

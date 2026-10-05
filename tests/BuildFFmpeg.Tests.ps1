@@ -72,6 +72,24 @@ Describe "build-ffmpeg: Hardware-Header" {
     }
 }
 
+Describe "build-ffmpeg: sauberer Rebuild je Arch" {
+    It "fuehrt 'make distclean' VOR configure aus (geteilter Quellbaum)" {
+        # Der Quellbaum wird fuer alle vier Builds wiederverwendet; ohne
+        # distclean recompiliert make nicht und der arm64ec-Build erbt die
+        # ARM64-Objekte des vorherigen Laufs.
+        $bash = @((New-Plan -Arch "arm64ec").BashScript -split "`n")
+        $clean = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "make distclean" })
+        $cfg   = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "^\./configure " })
+        $clean | Should -BeGreaterThan 0
+        $cfg   | Should -BeGreaterThan $clean
+    }
+
+    It "fuehrt 'make distclean' auch fuer die arm64-Ansicht aus" {
+        $bash = @((New-Plan -Arch "arm64").BashScript -split "`n")
+        ($bash -join "`n") | Should -Match "make distclean"
+    }
+}
+
 Describe "build-ffmpeg: ARM64EC-Erzwingung ueber config.mak" {
     It "haengt -arm64EC und -MACHINE:arm64EC nach configure an config.mak an (arm64ec)" {
         # FFmpegs configure VERWIRFT -arm64EC/-MACHINE:arm64EC still (seine
