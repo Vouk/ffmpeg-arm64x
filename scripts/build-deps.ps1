@@ -407,15 +407,26 @@ function Invoke-X264Build {
     # /MACHINE:arm64EC gefuettert werden -- sonst lehnt link.exe die EC-Objekte
     # als "Incompatible object type" ab (LNK1392), weil er sonst nach reinem
     # ARM64 linkt. Compile- UND Link-Maschine muessen uebereinstimmen.
+    # ARM64EC: cl kompiliert mit -arm64EC, der DLL-/EXE-Linker braucht
+    # -MACHINE:arm64EC. ZUSAETZLICH beim STATISCHEN Build der Archivar:
+    # x264 archiviert unter MSVC mit `AR="lib.exe -nologo -out:"` -- OHNE
+    # /machine. lib.exe lehnt dann die EC-Objekte mit LNK1392 ab
+    # ("Incompatible object type ... /machine:arm64ec?", CI 37350015929).
+    # Daher AR fuer die EC-Ansicht ueberschreiben und /machine:arm64ec an den
+    # Archivar reichen. x264s configure uebernimmt ein von aussen gesetztes AR
+    # (configure nutzt AR="${AR-...}"). Fuer die reine ARM64-Ansicht bleibt AR
+    # ungesetzt (x264-Default).
     if ($Ctx.Arch -eq 'arm64ec') {
         $ecFlags = ' --extra-cflags=-arm64EC --extra-ldflags=-MACHINE:arm64EC'
+        $arOverride = "AR='lib.exe -nologo -machine:arm64ec -out:' "
     } else {
         $ecFlags = ''
+        $arOverride = ''
     }
     # STATISCH bauen: --enable-static --disable-shared erzeugt die statische
     # Archiv-Lib libx264.lib (KEINE DLL + Import-Lib). FFmpeg linkt sie dann
     # direkt in avcodec ein, sodass zur Laufzeit KEINE libx264-*.dll noetig ist.
-    $configure = "CC=cl ./configure --prefix='$prefixPosix' --enable-static --disable-shared --disable-cli " +
+    $configure = "${arOverride}CC=cl ./configure --prefix='$prefixPosix' --enable-static --disable-shared --disable-cli " +
                  "--host=aarch64-w64-mingw32 --disable-asm" + $ecFlags
     # cl.exe muss im bash-PATH sichtbar sein (vcvars + MSYS2 PATH-inherit).
     & bash -lc "cd '$srcPosix' && $configure" 2>&1 | ForEach-Object { Write-Host $_ }
