@@ -279,6 +279,20 @@ function Get-FFmpegBuildPlan {
     # MSVC-Umgebung (INCLUDE/LIB/PATH aus vcvarsamd64_arm64.bat) durch.
     $envVars = @{ 'MSYS2_PATH_TYPE' = 'inherit' }
 
+    # ARM64EC-Ansicht: FFmpegs configure reicht --extra-cflags/--extra-ldflags
+    # NICHT zuverlaessig an die eigentliche Objekt-Kompilierung und den
+    # Shared-Lib-Link (SLIB_CREATE_DEF_CMD/LD) weiter -- im CI-Lauf 37290208404
+    # kamen die arm64ec-DLLs daher als reines ARM64 heraus (die Maschinenzeile
+    # zeigte (ARM64) statt (ARM64EC)). cl.exe und link.exe honorieren jedoch IMMER
+    # die Umgebungsvariablen _CL_ (an jeden cl-Aufruf angehaengt) und _LINK_ (an
+    # jeden link-Aufruf angehaengt). Darueber erzwingen wir -arm64EC fuer jede
+    # Kompilierung und -MACHINE:arm64EC fuer jeden Link, unabhaengig von FFmpegs
+    # Flag-Weiterleitung. Fuer die reine ARM64-Ansicht bleibt die Umgebung leer.
+    if ($archKey -eq 'arm64ec') {
+        $envVars['_CL_']   = '-arm64EC'
+        $envVars['_LINK_'] = '-MACHINE:arm64EC'
+    }
+
     return [pscustomobject]@{
         Variant        = $variantKey
         Arch           = $archKey

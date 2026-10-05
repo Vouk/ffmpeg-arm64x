@@ -71,3 +71,21 @@ Describe "build-ffmpeg: Hardware-Header" {
         $args | Should -Match "extra-ldflags=-MACHINE:arm64EC"
     }
 }
+
+Describe "build-ffmpeg: ARM64EC-Erzwingung ueber _CL_/_LINK_" {
+    It "setzt _CL_=-arm64EC und _LINK_=-MACHINE:arm64EC fuer die arm64ec-Ansicht" {
+        # FFmpegs configure reicht --extra-cflags/--extra-ldflags nicht
+        # zuverlaessig an Objekt-Kompilierung und Shared-Lib-Link weiter; cl.exe
+        # und link.exe honorieren jedoch IMMER _CL_/_LINK_. Diese muessen daher
+        # im Build-Env gesetzt sein, damit die arm64ec-DLLs wirklich ARM64EC sind.
+        $env = (New-Plan -Arch "arm64ec").Env
+        $env["_CL_"]   | Should -Be "-arm64EC"
+        $env["_LINK_"] | Should -Be "-MACHINE:arm64EC"
+    }
+
+    It "setzt _CL_/_LINK_ NICHT fuer die reine arm64-Ansicht" {
+        $env = (New-Plan -Arch "arm64").Env
+        $env.ContainsKey("_CL_")   | Should -BeFalse
+        $env.ContainsKey("_LINK_") | Should -BeFalse
+    }
+}
