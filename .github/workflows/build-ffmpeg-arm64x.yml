@@ -308,11 +308,29 @@ jobs:
           function Get-RemoteTip {
             param([string] $Url, [string] $Ref)
             # git ls-remote liefert "<sha>\t<ref>"; nur die SHA interessiert.
-            $line = (& git ls-remote $Url $Ref | Select-Object -First 1)
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($line)) {
-              Write-Error "git ls-remote fehlgeschlagen fuer $Url $Ref"
+            # WICHTIG: NICHT direkt in 'Select-Object -First 1' pipen -- das
+            # schliesst git's stdout nach der ersten Zeile und git endet mit
+            # einem Fehler-Exit (kaputte Pipe), obwohl die Ausgabe korrekt war.
+            # Stattdessen die vollstaendige Ausgabe sammeln und dann die erste
+            # Zeile nehmen. Zusaetzlich bis zu 3 Versuche fuer transiente
+            # Netzwerkfehler.
+            $out = $null
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              $out = & git ls-remote $Url $Ref 2>&1
+              if ($LASTEXITCODE -eq 0 -and $out) { break }
+              Write-Host "git ls-remote Versuch $attempt fehlgeschlagen fuer $Url $Ref (Exit $LASTEXITCODE); erneuter Versuch..."
+              Start-Sleep -Seconds 5
             }
-            return ($line -split "\s+")[0]
+            if ($LASTEXITCODE -ne 0 -or -not $out) {
+              Write-Error "git ls-remote endgueltig fehlgeschlagen fuer $Url $Ref"
+            }
+            # Nur die Zeile(n) nehmen, die mit einer 40-stelligen Hex-SHA
+            # beginnen -- so stoeren etwaige stderr-/Warnzeilen nicht.
+            $shaLine = @($out | Where-Object { $_ -match '^[0-9a-fA-F]{40}\s' })[0]
+            if ([string]::IsNullOrWhiteSpace($shaLine)) {
+              Write-Error "git ls-remote lieferte keine SHA fuer $Url $Ref (Ausgabe: $($out -join ' | '))"
+            }
+            return ($shaLine -split "\s+")[0]
           }
 
           $x264Sha = Get-RemoteTip 'https://code.videolan.org/videolan/x264.git' 'HEAD'
