@@ -36,6 +36,8 @@ Describe "Invoke-X265Build: Import-Lib-Alias" {
     }
 
     It "legt x265.lib an, wenn x265 <Installed> installiert hat" -ForEach @(
+        @{ Installed = "x265-static.lib" }   # statischer Build (ENABLE_SHARED=OFF)
+        @{ Installed = "libx265-static.lib" }
         @{ Installed = "libx265.lib" }
         @{ Installed = "libx265.dll.lib" }
         @{ Installed = "x265.lib" }

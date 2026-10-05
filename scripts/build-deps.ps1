@@ -521,12 +521,14 @@ function Invoke-X265Build {
     if ($LASTEXITCODE -ne 0) { throw "x265 cmake build schlug fehl (Exit $LASTEXITCODE)." }
     & cmake --install $buildDir 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "x265 cmake install schlug fehl (Exit $LASTEXITCODE)." }
-    # x265 installiert libx265.lib; FFmpegs MSVC-Wrapper sucht fuer -lx265
-    # jedoch x265.lib (LNK1181: cannot open input file x265.lib). Alias der
-    # vorhandenen Import-Lib auf x265.lib (und libx265.lib) anlegen.
+    # x265s statische CMake-Lib wird als x265-static.lib installiert (der
+    # Shared-Build hiesse libx265.lib). FFmpegs MSVC-Wrapper sucht fuer -lx265
+    # aber x265.lib (sonst LNK1181: cannot open input file x265.lib, CI
+    # 37352989935). Daher die tatsaechlich installierte Archiv-Lib finden --
+    # x265-static.lib zuerst -- und auf x265.lib (und libx265.lib) aliasen.
     $libDir = Join-Path $Ctx.OutputDir 'lib'
     $srcLib = $null
-    foreach ($cand in @('libx265.lib', 'libx265.dll.lib', 'x265.lib')) {
+    foreach ($cand in @('x265-static.lib', 'libx265-static.lib', 'libx265.lib', 'libx265.dll.lib', 'x265.lib')) {
         $cp = Join-Path $libDir $cand
         if (Test-Path -LiteralPath $cp) { $srcLib = $cp; break }
     }
