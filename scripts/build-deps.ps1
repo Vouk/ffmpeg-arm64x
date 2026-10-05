@@ -414,8 +414,11 @@ function Invoke-X264Build {
     # STATISCH bauen: --enable-static --disable-shared erzeugt die statische
     # Archiv-Lib libx264.lib (KEINE DLL + Import-Lib). FFmpeg linkt sie dann
     # direkt in avcodec ein, sodass zur Laufzeit KEINE libx264-*.dll noetig ist.
+    # STATISCHE CRT (-MT): dasselbe CRT-Modell wie x265 und wie FFmpegs
+    # configure-Linktest (statische UCRT). Verhindert den CRT-Modell-Konflikt
+    # (LNK4098) und __imp_*-Aufloesungsfehler beim Einlinken in FFmpeg.
     $configure = "CC=cl ./configure --prefix='$prefixPosix' --enable-static --disable-shared --disable-cli " +
-                 "--host=aarch64-w64-mingw32 --disable-asm" + $ecFlags
+                 "--host=aarch64-w64-mingw32 --disable-asm --extra-cflags=-MT" + $ecFlags
     # cl.exe muss im bash-PATH sichtbar sein (vcvars + MSYS2 PATH-inherit).
     & bash -lc "cd '$srcPosix' && $configure" 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) {
@@ -502,7 +505,16 @@ function Invoke-X265Build {
         '-DENABLE_SHARED=OFF',
         '-DENABLE_CLI=OFF',
         '-DENABLE_ASSEMBLY=OFF',
-        '-DCROSS_COMPILE_ARM=ON'
+        '-DCROSS_COMPILE_ARM=ON',
+        # STATISCHE CRT (/MT): x265 muss dasselbe CRT-Modell wie FFmpegs
+        # configure-Linktest verwenden. FFmpegs Probe linkt gegen die STATISCHE
+        # UCRT (libucrt.lib); mit /MD-gebautem x265 kollidieren die Modelle
+        # (LNK4098 "defaultlib 'MSVCRT' conflicts", und die __imp_*-Dynamik-
+        # Importe von x265 lassen sich nicht gegen die statische UCRT aufloesen
+        # -> ~30x LNK2001/LNK2019, CI 37359511933). Mit /MT bettet x265 den
+        # CRT-Code direkt ein (keine __imp_*-Importe) und linkt konfliktfrei.
+        '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',
+        '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW'
     )
     if ($cflags) {
         $cmakeArgs += "-DCMAKE_C_FLAGS=$cflags"
@@ -545,39 +557,12 @@ function Invoke-X265Build {
         Write-Host 'WARN: x265 Import-Lib nicht gefunden; kein Alias angelegt.'
     }
 
-    # STATISCH + MSVC: Die statische x265.lib ist C++-Code und referenziert die
-    # C- und C++-Laufzeit (isdigit/fread/round/_aligned_malloc, __stdio_common_*
-    # usw. als __imp_*, d. h. dynamische CRT /MD). FFmpegs configure-Linktest
-    # fuer x265 verlinkt aber NUR 'x265.lib' (compat/windows/mslink ... x265.lib)
-    # OHNE die CRT -> 30+ LNK2001/LNK2019 unresolved externals (CI 37354980776).
-    # x265s generierte x265.pc traegt keine Libs.private (der CMake-Blacklist
-    # entfernt msvcrt etc.). Deshalb die benoetigten MSVC-System-Importlibs an
-    # Libs.private der x265.pc anhaengen; im Static-Modus (FFmpeg nutzt
-    # --pkg-config-flags=--static) reicht pkg-config sie an den Link weiter.
-    #   ucrt.lib      - Universal CRT (isdigit, __stdio_common_*, fread, ...)
-    #   vcruntime.lib - VC-Laufzeit (__chkstk u. a.)
-    #   msvcrt.lib    - CRT-Startup/Import-Glue (/MD)
-    #   msvcprt.lib   - C++-Standardbibliothek (x265 ist C++)
-    #   legacy_stdio_definitions.lib - Bruecke fuer __stdio_common_*-Altsymbole
-    # Namen OHNE '-l' direkt als .lib, damit FFmpegs mslink-Wrapper sie
-    # unveraendert an link.exe reicht.
-    $pcDir = Join-Path $libDir 'pkgconfig'
-    $pcFile = Join-Path $pcDir 'x265.pc'
-    if (Test-Path -LiteralPath $pcFile) {
-        $crtLibs = 'ucrt.lib vcruntime.lib msvcrt.lib msvcprt.lib legacy_stdio_definitions.lib'
-        $pcText = [System.IO.File]::ReadAllText($pcFile)
-        if ($pcText -match '(?m)^\s*Libs\.private\s*:') {
-            # vorhandene Libs.private-Zeile ergaenzen
-            $pcText = [regex]::Replace($pcText, '(?m)^(\s*Libs\.private\s*:.*)$', ('$1 ' + $crtLibs))
-        } else {
-            $pcText = $pcText.TrimEnd() + "`nLibs.private: $crtLibs`n"
-        }
-        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::WriteAllText($pcFile, $pcText, $utf8NoBom)
-        Write-Host "x265: CRT-System-Libs an Libs.private von x265.pc angehaengt ($crtLibs)."
-    } else {
-        Write-Host "WARN: x265.pc nicht gefunden ($pcFile); Libs.private nicht ergaenzt."
-    }
+    # Hinweis: Es werden KEINE CRT-System-Libs mehr an x265.pc:Libs.private
+    # angehaengt. x265 wird jetzt mit statischer CRT (/MT via
+    # CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded) gebaut; der CRT-Code steckt
+    # damit direkt in x265.lib und wird von der statischen UCRT aufgeloest, die
+    # FFmpegs Linktest ohnehin zieht. Dynamische Import-Libs (ucrt.lib etc.) an
+    # Libs.private wuerden das CRT-Modell wieder mischen (LNK4098) -- daher weg.
 }
 
 # ---------------------------------------------------------------------------
