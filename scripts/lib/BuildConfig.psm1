@@ -77,6 +77,12 @@ function Get-ConfigureFlags {
     # ueberspringt FFmpegs "run a test binary"-Pruefung (sonst: C compiler
     # test failed / cl.exe is unable to create an executable file).
     $flags.Add('--enable-cross-compile')
+    # x264/x265 werden STATISCH gebaut und direkt in avcodec eingelinkt (keine
+    # x264/x265-DLL zur Laufzeit). Damit FFmpegs configure beim pkg-config-
+    # Linktest die privaten Abhaengigkeiten der statischen Libs (Libs.private
+    # aus x264.pc/x265.pc) beruecksichtigt, pkg-config im Static-Modus fahren.
+    # Fuer die LGPL-Variante ohne externe Codecs ist das Flag folgenlos.
+    $flags.Add('--pkg-config-flags=--static')
     # ARM64-NEON-Assembler via MSVC braeuchte gas-preprocessor.pl + armasm64
     # (configure sonst: "GNU assembler not found, install/update
     # gas-preprocessor"). Wie bei x264/x265 wird der reine C-Pfad gebaut.

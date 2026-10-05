@@ -412,7 +412,10 @@ function Invoke-X264Build {
     } else {
         $ecFlags = ''
     }
-    $configure = "CC=cl ./configure --prefix='$prefixPosix' --enable-shared --disable-cli " +
+    # STATISCH bauen: --enable-static --disable-shared erzeugt die statische
+    # Archiv-Lib libx264.lib (KEINE DLL + Import-Lib). FFmpeg linkt sie dann
+    # direkt in avcodec ein, sodass zur Laufzeit KEINE libx264-*.dll noetig ist.
+    $configure = "CC=cl ./configure --prefix='$prefixPosix' --enable-static --disable-shared --disable-cli " +
                  "--host=aarch64-w64-mingw32 --disable-asm" + $ecFlags
     # cl.exe muss im bash-PATH sichtbar sein (vcvars + MSYS2 PATH-inherit).
     & bash -lc "cd '$srcPosix' && $configure" 2>&1 | ForEach-Object { Write-Host $_ }
@@ -426,18 +429,27 @@ function Invoke-X264Build {
     }
     & bash -lc "cd '$srcPosix' && make -j && make install" 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "x264 make/install schlug fehl (Exit $LASTEXITCODE)." }
-    # x264 installiert seine Import-Lib als libx264.dll.lib; FFmpegs MSVC-
-    # Wrapper uebersetzt -lx264 aber zu libx264.lib. Alias anlegen, damit
-    # FFmpegs pkg-config-Linktest die Lib findet (sonst LNK1181).
+    # Statischer Build: x264 installiert die Archiv-Lib als libx264.lib (bei
+    # MSVC ggf. ohne lib-Praefix als x264.lib). FFmpegs MSVC-Wrapper sucht fuer
+    # -lx264 nach x264.lib bzw. libx264.lib. Sicherstellen, dass beide Namen
+    # existieren (Alias der tatsaechlich installierten Archiv-Lib), sonst
+    # LNK1181. Die alte DLL-Import-Lib (libx264.dll.lib) entfaellt im
+    # statischen Build.
     $libDir = Join-Path $Ctx.OutputDir 'lib'
-    $srcLib = Join-Path $libDir 'libx264.dll.lib'
-    if (Test-Path -LiteralPath $srcLib) {
+    $srcLib = $null
+    foreach ($cand in @('libx264.lib', 'x264.lib', 'libx264.a')) {
+        $cp = Join-Path $libDir $cand
+        if (Test-Path -LiteralPath $cp) { $srcLib = $cp; break }
+    }
+    if ($srcLib) {
         foreach ($alias in @('libx264.lib', 'x264.lib')) {
-            Copy-Item -LiteralPath $srcLib -Destination (Join-Path $libDir $alias) -Force
+            $dest = Join-Path $libDir $alias
+            if ([string]::Equals($dest, $srcLib, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            Copy-Item -LiteralPath $srcLib -Destination $dest -Force
         }
-        Write-Host 'x264: Import-Lib-Alias libx264.lib/x264.lib angelegt.'
+        Write-Host "x264: statische Archiv-Lib ($([System.IO.Path]::GetFileName($srcLib))) -> Alias libx264.lib/x264.lib."
     } else {
-        Write-Host 'WARN: libx264.dll.lib nicht gefunden; kein Alias angelegt.'
+        Write-Host 'WARN: statische x264-Lib nicht gefunden; kein Alias angelegt.'
     }
 }
 
@@ -471,7 +483,10 @@ function Invoke-X265Build {
         '-DCMAKE_SYSTEM_PROCESSOR=ARM64',
         '-DCMAKE_C_COMPILER=cl',
         '-DCMAKE_CXX_COMPILER=cl',
-        '-DENABLE_SHARED=ON',
+        # STATISCH bauen: ENABLE_SHARED=OFF erzeugt die statische Archiv-Lib
+        # libx265.lib (KEINE x265-*.dll + Import-Lib). FFmpeg linkt sie direkt
+        # in avcodec ein -> zur Laufzeit KEINE x265-DLL noetig.
+        '-DENABLE_SHARED=OFF',
         '-DENABLE_CLI=OFF',
         '-DENABLE_ASSEMBLY=OFF',
         '-DCROSS_COMPILE_ARM=ON'
