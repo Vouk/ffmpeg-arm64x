@@ -511,10 +511,13 @@ function Invoke-X265Build {
         # UCRT (libucrt.lib); mit /MD-gebautem x265 kollidieren die Modelle
         # (LNK4098 "defaultlib 'MSVCRT' conflicts", und die __imp_*-Dynamik-
         # Importe von x265 lassen sich nicht gegen die statische UCRT aufloesen
-        # -> ~30x LNK2001/LNK2019, CI 37359511933). Mit /MT bettet x265 den
-        # CRT-Code direkt ein (keine __imp_*-Importe) und linkt konfliktfrei.
-        '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',
-        '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW'
+        # -> ~30x LNK2001/LNK2019, CI 37359511933/37361568464).
+        # WICHTIG: x265 ignoriert CMAKE_MSVC_RUNTIME_LIBRARY -- es ersetzt /MD
+        # durch /MT NUR, wenn seine EIGENE Option STATIC_LINK_CRT gesetzt ist
+        # (source/CMakeLists.txt: if(MSVC) if(STATIC_LINK_CRT) REPLACE /MD /MT).
+        # Daher STATIC_LINK_CRT=ON setzen (greift auf CMAKE_*_FLAGS_RELEASE, und
+        # wir bauen Release).
+        '-DSTATIC_LINK_CRT=ON'
     )
     if ($cflags) {
         $cmakeArgs += "-DCMAKE_C_FLAGS=$cflags"
