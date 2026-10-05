@@ -89,7 +89,16 @@ function Get-ConfigureFlags {
     $flags.Add('--arch=arm64')
     if ($archKey -eq 'arm64ec') {
         $flags.Add('--extra-cflags=-arm64EC')
-        $flags.Add('--extra-ldflags=-MACHINE:arm64EC')
+        # WICHTIG: Der Linker-Maschinen-Flag MUSS kleingeschrieben sein
+        # (-machine:arm64ec). compat/windows/makedef erzeugt eine temporaere
+        # Lib, um Symbole fuer die .def zu extrahieren, und haengt an sein
+        # lib.exe nur dann -machine:arm64ec an, wenn LDFLAGS den WORTWOERTLICHEN,
+        # KLEINGESCHRIEBENEN Teilstring "machine:arm64ec" enthaelt (shell-case,
+        # case-sensitiv). Mit "-MACHINE:arm64EC" griff das NICHT -> makedef rief
+        # lib.exe ohne EC-Maschine auf -> "Could not create temporary library"
+        # (CI 37302790749). link.exe akzeptiert die Option case-insensitiv,
+        # daher ist die Kleinschreibung fuer beide korrekt.
+        $flags.Add('--extra-ldflags=-machine:arm64ec')
     }
     $flags.Add('--enable-amf')       # R5.1 / R5.3
     $flags.Add('--enable-nvenc')     # R5.2 / R5.4

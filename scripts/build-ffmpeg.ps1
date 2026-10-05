@@ -278,17 +278,20 @@ function Get-FFmpegBuildPlan {
     # ein No-op; daher "|| true" (set -e nicht ausloesen).
     $distclean = 'make distclean 2>/dev/null || true'
 
-    # ARM64EC-Flags: configure legt -arm64EC in CFLAGS und -MACHINE:arm64EC in
-    # LDFLAGS bereits korrekt in config.mak ab (verifiziert in CI: config.mak
-    # Zeile CFLAGS=... -arm64EC ... und LDFLAGS=... -MACHINE:arm64EC ...). Zur
-    # Sicherheit haengen wir sie zusaetzlich per "+=" an -- schadet nicht und
-    # haelt die Erzwingung robust, falls configure sie in einer anderen
-    # FFmpeg-Version doch verwirft. "+=" statt "=$(CFLAGS) ..." (letzteres waere
-    # eine rekursive Selbstreferenz, die make abbricht).
+    # ARM64EC-Flags: configure legt -arm64EC in CFLAGS und den Maschinen-Flag in
+    # LDFLAGS bereits in config.mak ab. Zur Sicherheit haengen wir sie zusaetzlich
+    # per "+=" an -- schadet nicht und haelt die Erzwingung robust. "+=" statt
+    # "=$(CFLAGS) ..." (letzteres waere eine rekursive Selbstreferenz).
+    #
+    # Der LDFLAGS-Maschinen-Flag MUSS kleingeschrieben sein (-machine:arm64ec):
+    # compat/windows/makedef matcht LDFLAGS case-sensitiv auf den Teilstring
+    # "machine:arm64ec", um sein lib.exe mit -machine:arm64ec aufzurufen. Fehlt
+    # der Match, baut makedef die temporaere Symbol-Lib als reines ARM64 aus
+    # ARM64EC-Objekten -> "Could not create temporary library" (CI 37302790749).
     $ecForce = if ($archKey -eq 'arm64ec') {
         @(
-            '# ARM64EC absichern: Flags zusaetzlich an config.mak anhaengen.'
-            "printf '\nCFLAGS += -arm64EC\nLDFLAGS += -MACHINE:arm64EC\n' >> ffbuild/config.mak"
+            '# ARM64EC absichern: Flags zusaetzlich an config.mak anhaengen (LDFLAGS kleingeschrieben fuer makedef).'
+            "printf '\nCFLAGS += -arm64EC\nLDFLAGS += -machine:arm64ec\n' >> ffbuild/config.mak"
             'echo "---- config.mak CFLAGS/LDFLAGS nach ARM64EC-Append ----"'
             'grep -nE "^(CFLAGS|LDFLAGS)" ffbuild/config.mak || true'
         )

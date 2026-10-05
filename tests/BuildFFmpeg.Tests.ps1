@@ -68,7 +68,10 @@ Describe "build-ffmpeg: Hardware-Header" {
         $args | Should -Match "--arch=arm64(\s|$)"
         $args | Should -Not -Match "--arch=arm64ec"
         $args | Should -Match "extra-cflags=-arm64EC"
-        $args | Should -Match "extra-ldflags=-MACHINE:arm64EC"
+        # Kleinschreibung ist zwingend: makedef matcht LDFLAGS case-sensitiv auf
+        # "machine:arm64ec". Case-sensitiver Vergleich via cmatch.
+        ($args -cmatch "extra-ldflags=-machine:arm64ec") | Should -BeTrue
+        ($args -cmatch "MACHINE:arm64EC") | Should -BeFalse
     }
 }
 
@@ -91,19 +94,20 @@ Describe "build-ffmpeg: sauberer Rebuild je Arch" {
 }
 
 Describe "build-ffmpeg: ARM64EC-Erzwingung ueber config.mak" {
-    It "haengt -arm64EC und -MACHINE:arm64EC nach configure an config.mak an (arm64ec)" {
-        # FFmpegs configure VERWIRFT -arm64EC/-MACHINE:arm64EC still (seine
-        # check_cflags/check_ldflags-Probekompilate schlagen fehl), daher muessen
-        # die Flags NACH configure direkt an ffbuild/config.mak angehaengt werden,
-        # damit die arm64ec-DLLs wirklich ARM64EC sind.
+    It "haengt -arm64EC und -machine:arm64ec nach configure an config.mak an (arm64ec)" {
+        # Die Flags werden NACH configure direkt an ffbuild/config.mak
+        # angehaengt, damit die arm64ec-DLLs wirklich ARM64EC sind. Der
+        # LDFLAGS-Flag ist kleingeschrieben, weil makedef ihn case-sensitiv matcht.
         $bash = @((New-Plan -Arch "arm64ec").BashScript -split "`n")
 
-        $append = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "config\.mak" -and $l -match "arm64EC" })
+        $append = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "config\.mak" -and $l -match "arm64ec" })
         $append | Should -BeGreaterThan 0
+        $joined = ($bash -join "`n")
         # Append nutzt "+=", nicht die rekursive Selbstreferenz "=$(CFLAGS)".
-        ($bash -join "`n") | Should -Match "CFLAGS \+= -arm64EC"
-        ($bash -join "`n") | Should -Match "LDFLAGS \+= -MACHINE:arm64EC"
-        ($bash -join "`n") | Should -Not -Match 'CFLAGS=\$\(CFLAGS\)'
+        $joined | Should -Match "CFLAGS \+= -arm64EC"
+        ($joined -cmatch "LDFLAGS \+= -machine:arm64ec") | Should -BeTrue
+        ($joined -cmatch "MACHINE:arm64EC") | Should -BeFalse
+        $joined | Should -Not -Match 'CFLAGS=\$\(CFLAGS\)'
     }
 
     It "haengt die Flags NACH configure und VOR make an" {
