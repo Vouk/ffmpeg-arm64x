@@ -544,6 +544,40 @@ function Invoke-X265Build {
     } else {
         Write-Host 'WARN: x265 Import-Lib nicht gefunden; kein Alias angelegt.'
     }
+
+    # STATISCH + MSVC: Die statische x265.lib ist C++-Code und referenziert die
+    # C- und C++-Laufzeit (isdigit/fread/round/_aligned_malloc, __stdio_common_*
+    # usw. als __imp_*, d. h. dynamische CRT /MD). FFmpegs configure-Linktest
+    # fuer x265 verlinkt aber NUR 'x265.lib' (compat/windows/mslink ... x265.lib)
+    # OHNE die CRT -> 30+ LNK2001/LNK2019 unresolved externals (CI 37354980776).
+    # x265s generierte x265.pc traegt keine Libs.private (der CMake-Blacklist
+    # entfernt msvcrt etc.). Deshalb die benoetigten MSVC-System-Importlibs an
+    # Libs.private der x265.pc anhaengen; im Static-Modus (FFmpeg nutzt
+    # --pkg-config-flags=--static) reicht pkg-config sie an den Link weiter.
+    #   ucrt.lib      - Universal CRT (isdigit, __stdio_common_*, fread, ...)
+    #   vcruntime.lib - VC-Laufzeit (__chkstk u. a.)
+    #   msvcrt.lib    - CRT-Startup/Import-Glue (/MD)
+    #   msvcprt.lib   - C++-Standardbibliothek (x265 ist C++)
+    #   legacy_stdio_definitions.lib - Bruecke fuer __stdio_common_*-Altsymbole
+    # Namen OHNE '-l' direkt als .lib, damit FFmpegs mslink-Wrapper sie
+    # unveraendert an link.exe reicht.
+    $pcDir = Join-Path $libDir 'pkgconfig'
+    $pcFile = Join-Path $pcDir 'x265.pc'
+    if (Test-Path -LiteralPath $pcFile) {
+        $crtLibs = 'ucrt.lib vcruntime.lib msvcrt.lib msvcprt.lib legacy_stdio_definitions.lib'
+        $pcText = [System.IO.File]::ReadAllText($pcFile)
+        if ($pcText -match '(?m)^\s*Libs\.private\s*:') {
+            # vorhandene Libs.private-Zeile ergaenzen
+            $pcText = [regex]::Replace($pcText, '(?m)^(\s*Libs\.private\s*:.*)$', ('$1 ' + $crtLibs))
+        } else {
+            $pcText = $pcText.TrimEnd() + "`nLibs.private: $crtLibs`n"
+        }
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($pcFile, $pcText, $utf8NoBom)
+        Write-Host "x265: CRT-System-Libs an Libs.private von x265.pc angehaengt ($crtLibs)."
+    } else {
+        Write-Host "WARN: x265.pc nicht gefunden ($pcFile); Libs.private nicht ergaenzt."
+    }
 }
 
 # ---------------------------------------------------------------------------
