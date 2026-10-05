@@ -263,6 +263,35 @@ function Get-FFmpegBuildPlan {
     # Diagnose: zeigt die CCDEP-Zeile aus config.mak im CI-Log.
     $cfgMakDiag = 'grep -n "^CCDEP" ffbuild/config.mak || true'
 
+    # ARM64EC-Erzwingung (nur arm64ec): FFmpegs configure VERWIRFT -arm64EC aus
+    # --extra-cflags und -MACHINE:arm64EC aus --extra-ldflags still, weil seine
+    # check_cflags/check_ldflags-Probekompilate/-links (reines ARM64) mit diesen
+    # Flags fehlschlagen -- die Flags landen daher NICHT in config.mak. Dadurch
+    # kamen die arm64ec-DLLs in zwei CI-Laeufen als reines ARM64 heraus.
+    #
+    # Zuverlaessige Loesung: die Flags NACH configure direkt in ffbuild/config.mak
+    # anhaengen, unter Umgehung jeder configure-Validierung:
+    #   * CFLAGS  += -arm64EC         -> jede Objekt-Kompilierung wird ARM64EC
+    #   * LDFLAGS += -MACHINE:arm64EC -> jeder Link (DLL via LINK_SO_ARGS =
+    #                                    SHFLAGS LDFLAGS LDSOFLAGS, und exe)
+    #                                    zielt auf ARM64EC
+    # Beide Variablen werden von JEDER Compile-/Link-Regel genutzt (siehe
+    # ffbuild/common.mak bzw. library.mak LINK_SO_ARGS), daher ist die
+    # Erzwingung vollstaendig und kann nicht wegvalidiert werden. Die
+    # Append-Zeilen stehen zwischen configure und make.
+    # Mit "+=" anhaengen (NICHT "CFLAGS=$(CFLAGS) ...": das waere eine
+    # rekursive Selbstreferenz, die make mit "references itself" abbricht).
+    # config.mak nutzt rekursive Zuweisungen (VAR=...), daher ergaenzt "+="
+    # den bestehenden Wert korrekt.
+    $ecForce = if ($archKey -eq 'arm64ec') {
+        @(
+            '# ARM64EC erzwingen: Flags direkt in config.mak anhaengen (configure verwirft sie sonst).'
+            "printf '\nCFLAGS += -arm64EC\nLDFLAGS += -MACHINE:arm64EC\n' >> ffbuild/config.mak"
+            'echo "---- config.mak CFLAGS/LDFLAGS nach ARM64EC-Append ----"'
+            'grep -nE "^(CFLAGS|LDFLAGS)" ffbuild/config.mak || true'
+        )
+    } else { @() }
+
     $bashLines = @(
         'set -euo pipefail'
         $pkgPathLine
@@ -270,6 +299,7 @@ function Get-FFmpegBuildPlan {
         "cd $quotedSource"
         "./configure $quotedConfigureArgs"
         $cfgMakDiag
+    ) + $ecForce + @(
         "make -j$Jobs $makeOverrides"
         "make install $makeOverrides"
     )
@@ -277,21 +307,13 @@ function Get-FFmpegBuildPlan {
 
     # Umgebungsvariablen für den bash-Aufruf. MSYS2_PATH_TYPE=inherit reicht die
     # MSVC-Umgebung (INCLUDE/LIB/PATH aus vcvarsamd64_arm64.bat) durch.
+    #
+    # Hinweis: Ein frueherer Versuch, ARM64EC ueber _CL_/_LINK_ zu erzwingen,
+    # griff NICHT -- die Login-Shell (bash -lc) bzw. MSYS2 reichte diese
+    # Variablen nicht bis cl.exe/link.exe durch, die arm64ec-DLLs blieben reines
+    # ARM64. Die Erzwingung erfolgt daher zuverlaessig ueber das Anhaengen der
+    # Flags an ffbuild/config.mak (siehe $ecForce oben), nicht ueber die Umgebung.
     $envVars = @{ 'MSYS2_PATH_TYPE' = 'inherit' }
-
-    # ARM64EC-Ansicht: FFmpegs configure reicht --extra-cflags/--extra-ldflags
-    # NICHT zuverlaessig an die eigentliche Objekt-Kompilierung und den
-    # Shared-Lib-Link (SLIB_CREATE_DEF_CMD/LD) weiter -- im CI-Lauf 37290208404
-    # kamen die arm64ec-DLLs daher als reines ARM64 heraus (die Maschinenzeile
-    # zeigte (ARM64) statt (ARM64EC)). cl.exe und link.exe honorieren jedoch IMMER
-    # die Umgebungsvariablen _CL_ (an jeden cl-Aufruf angehaengt) und _LINK_ (an
-    # jeden link-Aufruf angehaengt). Darueber erzwingen wir -arm64EC fuer jede
-    # Kompilierung und -MACHINE:arm64EC fuer jeden Link, unabhaengig von FFmpegs
-    # Flag-Weiterleitung. Fuer die reine ARM64-Ansicht bleibt die Umgebung leer.
-    if ($archKey -eq 'arm64ec') {
-        $envVars['_CL_']   = '-arm64EC'
-        $envVars['_LINK_'] = '-MACHINE:arm64EC'
-    }
 
     return [pscustomobject]@{
         Variant        = $variantKey

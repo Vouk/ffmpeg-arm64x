@@ -72,20 +72,33 @@ Describe "build-ffmpeg: Hardware-Header" {
     }
 }
 
-Describe "build-ffmpeg: ARM64EC-Erzwingung ueber _CL_/_LINK_" {
-    It "setzt _CL_=-arm64EC und _LINK_=-MACHINE:arm64EC fuer die arm64ec-Ansicht" {
-        # FFmpegs configure reicht --extra-cflags/--extra-ldflags nicht
-        # zuverlaessig an Objekt-Kompilierung und Shared-Lib-Link weiter; cl.exe
-        # und link.exe honorieren jedoch IMMER _CL_/_LINK_. Diese muessen daher
-        # im Build-Env gesetzt sein, damit die arm64ec-DLLs wirklich ARM64EC sind.
-        $env = (New-Plan -Arch "arm64ec").Env
-        $env["_CL_"]   | Should -Be "-arm64EC"
-        $env["_LINK_"] | Should -Be "-MACHINE:arm64EC"
+Describe "build-ffmpeg: ARM64EC-Erzwingung ueber config.mak" {
+    It "haengt -arm64EC und -MACHINE:arm64EC nach configure an config.mak an (arm64ec)" {
+        # FFmpegs configure VERWIRFT -arm64EC/-MACHINE:arm64EC still (seine
+        # check_cflags/check_ldflags-Probekompilate schlagen fehl), daher muessen
+        # die Flags NACH configure direkt an ffbuild/config.mak angehaengt werden,
+        # damit die arm64ec-DLLs wirklich ARM64EC sind.
+        $bash = @((New-Plan -Arch "arm64ec").BashScript -split "`n")
+
+        $append = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "config\.mak" -and $l -match "arm64EC" })
+        $append | Should -BeGreaterThan 0
+        # Append nutzt "+=", nicht die rekursive Selbstreferenz "=$(CFLAGS)".
+        ($bash -join "`n") | Should -Match "CFLAGS \+= -arm64EC"
+        ($bash -join "`n") | Should -Match "LDFLAGS \+= -MACHINE:arm64EC"
+        ($bash -join "`n") | Should -Not -Match 'CFLAGS=\$\(CFLAGS\)'
     }
 
-    It "setzt _CL_/_LINK_ NICHT fuer die reine arm64-Ansicht" {
-        $env = (New-Plan -Arch "arm64").Env
-        $env.ContainsKey("_CL_")   | Should -BeFalse
-        $env.ContainsKey("_LINK_") | Should -BeFalse
+    It "haengt die Flags NACH configure und VOR make an" {
+        $bash = @((New-Plan -Arch "arm64ec").BashScript -split "`n")
+        $cfg    = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "^\./configure " })
+        $append = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "config\.mak" -and $l -match "arm64EC" })
+        $mk     = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "^make -j" })
+        $append | Should -BeGreaterThan $cfg
+        $mk     | Should -BeGreaterThan $append
+    }
+
+    It "haengt NICHTS an config.mak an fuer die reine arm64-Ansicht" {
+        $bash = @((New-Plan -Arch "arm64").BashScript -split "`n")
+        ($bash -join "`n") | Should -Not -Match "arm64EC"
     }
 }
