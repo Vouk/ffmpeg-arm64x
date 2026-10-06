@@ -1,17 +1,20 @@
 # =============================================================================
-#  EXPERIMENT: Echte (voll verschmolzene) ARM64X-DLL fuer EINE FFmpeg-Lib
+#  EXPERIMENT: Echte (voll verschmolzene) ARM64X-DLLs fuer FFmpeg-Libs
 #
-#  Zweck: Machbarkeitsnachweis fuer "true merged ARM64X" (OHNE Forwarder) am
-#  Beispiel avutil. Baut avutil zweimal (arm64 + arm64ec), sichert je Ansicht
-#  die Objekte + .def (merge-arm64x-true.ps1 -Mode Capture) und fuehrt dann
-#  EINEN /machine:arm64x-Link durch (-Mode Merge). Danach prueft dumpbin, ob die
-#  DLL wirklich beide Ansichten traegt (ARM64X-Header, Hybrid-Loadconfig,
-#  Export-Tabelle).
+#  Zweck: Machbarkeitsnachweis fuer "true merged ARM64X" (OHNE Forwarder).
+#  Stufe 1 (bestaetigt): avutil.
+#  Stufe 2 (dieser Lauf): avcodec -- der harte Fall (viele Objekte, haengt von
+#  avutil ab, in unserer Konfiguration mit NVENC/NVDEC/AMF). Testet, ob ein
+#  ABHAENGIGER Merge die avutil-Importe gegen die GEMERGTE avutil-Import-Lib
+#  aufloest und als ARM64X verifiziert.
 #
-#  Diese Pipeline ist ISOLIERT: sie veraendert die produktive
-#  build-ffmpeg-arm64x.yml NICHT. Nur manuell ausloesbar.
+#  Ablauf: avutil + avcodec je zweimal bauen (arm64 + arm64ec), je Ansicht die
+#  Objekte + .def sichern. Dann avutil mergen (erzeugt avutil.lib), danach
+#  avcodec mergen mit -ExtraLibs <avutil.lib>. dumpbin verifiziert beide.
+#
+#  ISOLIERT: veraendert die produktive build-ffmpeg-arm64x.yml NICHT.
 # =============================================================================
-name: EXPERIMENT merged ARM64X (avutil)
+name: EXPERIMENT merged ARM64X (avutil + avcodec)
 
 on:
   workflow_dispatch:
@@ -29,11 +32,14 @@ env:
   OUT_DIR: ${{ github.workspace }}\out
   STAGE_DIR: ${{ github.workspace }}\out\merge-stage
   MERGED_DIR: ${{ github.workspace }}\out\merged
+  AMF_HEADERS: ${{ github.workspace }}\src\AMF\amf\public\include
+  NVCODEC_HEADERS: ${{ github.workspace }}\src\nv-codec-headers\include
+  HW_HEADERS: ${{ github.workspace }}\out\hwheaders
 
 jobs:
   experiment:
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
     defaults:
       run:
         shell: pwsh
@@ -92,8 +98,17 @@ jobs:
           "FFMPEG_SRC=$ffmpegSrc" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "FFmpeg-Quelle: $ffmpegSrc"
 
-      # Backports anwenden (makedef-Response-Datei etc.) -- dieselben wie
-      # produktiv, damit die .def/.objs-Erzeugung identisch ist.
+      # Hardware-Header (AMF + nv-codec) wie produktiv -- avcodec braucht sie
+      # fuer --enable-amf/--enable-nvenc/--enable-nvdec.
+      - name: Fetch + install hardware headers
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Clone-Repo { param($u,$d) if (-not (Test-Path -LiteralPath $d)) { git clone --depth=1 $u $d; if ($LASTEXITCODE -ne 0) { Write-Error "clone $u" } } }
+          Clone-Repo 'https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git' (Join-Path $env:SRC_DIR 'AMF')
+          Clone-Repo 'https://github.com/FFmpeg/nv-codec-headers.git' (Join-Path $env:SRC_DIR 'nv-codec-headers')
+          & "${{ github.workspace }}\scripts\install-hwheaders.ps1" `
+            -AmfHeaderPath "$env:AMF_HEADERS" -NvCodecHeaderPath "$env:NVCODEC_HEADERS" -OutputDir "$env:HW_HEADERS"
+
       - name: Apply FFmpeg source backports
         run: |
           $ErrorActionPreference = 'Stop'
@@ -103,66 +118,78 @@ jobs:
           }
 
       # ---------------------------------------------------------------------
-      #  avutil ARM64 bauen, dann Objekte + .def sichern.
+      #  ARM64: avutil + avcodec bauen, dann beide Libs capturen.
+      #  Hinweis: 'make libavcodec/avcodec-62.dll' baut avutil transitiv mit.
       # ---------------------------------------------------------------------
-      - name: Build avutil ARM64 + capture
+      - name: Build avutil + avcodec ARM64 + capture
         shell: cmd
         run: |
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
           set "MSYS2_PATH_TYPE=inherit"
-          bash -lc "cd \"$FFMPEG_SRC\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll"
+          bash -lc "cd \"$FFMPEG_SRC\" && HW=$(cygpath -u \"$HW_HEADERS\") && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --pkg-config-flags=--static --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --enable-amf --enable-nvenc --enable-nvdec --extra-cflags=-I$HW/include --pkg-config-flags=--static && export PKG_CONFIG_PATH=\"$HW/lib/pkgconfig\" && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
-            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64 -StageDir "%STAGE_DIR%"
+            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64 -StageDir "%STAGE_DIR%" -LibBase avutil-60
+          if errorlevel 1 exit /b 1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
+            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64 -StageDir "%STAGE_DIR%" -LibBase avcodec-62
           if errorlevel 1 exit /b 1
 
       # ---------------------------------------------------------------------
-      #  avutil ARM64EC bauen (frischer Baum), dann Objekte + .def sichern.
+      #  ARM64EC: dito (frischer Baum).
       # ---------------------------------------------------------------------
-      - name: Build avutil ARM64EC + capture
+      - name: Build avutil + avcodec ARM64EC + capture
         shell: cmd
         run: |
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
           set "MSYS2_PATH_TYPE=inherit"
-          bash -lc "cd \"$FFMPEG_SRC\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --extra-cflags=-arm64EC --extra-ldflags=-machine:arm64ec && printf '\nCFLAGS += -arm64EC\nLDFLAGS += -machine:arm64ec\n' >> ffbuild/config.mak && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll"
+          bash -lc "cd \"$FFMPEG_SRC\" && HW=$(cygpath -u \"$HW_HEADERS\") && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --pkg-config-flags=--static --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --enable-amf --enable-nvenc --enable-nvdec --extra-cflags=\"-arm64EC -I$HW/include\" --extra-ldflags=-machine:arm64ec && export PKG_CONFIG_PATH=\"$HW/lib/pkgconfig\" && printf '\nCFLAGS += -arm64EC\nLDFLAGS += -machine:arm64ec\n' >> ffbuild/config.mak && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
-            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64ec -StageDir "%STAGE_DIR%"
+            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64ec -StageDir "%STAGE_DIR%" -LibBase avutil-60
+          if errorlevel 1 exit /b 1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
+            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64ec -StageDir "%STAGE_DIR%" -LibBase avcodec-62
           if errorlevel 1 exit /b 1
 
       # ---------------------------------------------------------------------
-      #  EIN /machine:arm64x-Link aus beiden Ansichten -> verschmolzene DLL.
+      #  Merge avutil zuerst (erzeugt avutil-60.dll + avutil.lib), dann avcodec
+      #  mit -ExtraLibs <avutil.lib> (loest die avutil-Importe auf).
       # ---------------------------------------------------------------------
-      - name: Merge into a true ARM64X DLL (no forwarder)
+      - name: Merge avutil, then avcodec (true ARM64X)
         shell: cmd
         run: |
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
-            -Mode Merge -StageDir "%STAGE_DIR%" -OutputDir "%MERGED_DIR%"
+            -Mode Merge -StageDir "%STAGE_DIR%" -OutputDir "%MERGED_DIR%" -LibBase avutil-60
+          if errorlevel 1 exit /b 1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
+            -Mode Merge -StageDir "%STAGE_DIR%" -OutputDir "%MERGED_DIR%" -LibBase avcodec-62 -ExtraLibs "%MERGED_DIR%\avutil.lib"
           if errorlevel 1 exit /b 1
 
       # ---------------------------------------------------------------------
-      #  Verifikation: Header (ARM64X), Hybrid-Loadconfig, Exporte.
+      #  Verifikation beider DLLs: Header (ARM64X), Hybrid-Loadconfig, Exporte.
       # ---------------------------------------------------------------------
-      - name: Verify merged ARM64X DLL
+      - name: Verify merged ARM64X DLLs
         shell: cmd
         run: |
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
-          echo ===== dumpbin /headers =====
-          dumpbin /headers "%MERGED_DIR%\avutil-60.dll" | findstr /i "machine ARM64X ARM64EC"
-          echo ===== dumpbin /loadconfig (CHPE / hybrid) =====
-          dumpbin /loadconfig "%MERGED_DIR%\avutil-60.dll" | findstr /i "CHPE hybrid ARM64X code map"
-          echo ===== dumpbin /exports (head) =====
-          dumpbin /exports "%MERGED_DIR%\avutil-60.dll" | findstr /i "av_"
-          echo ===== file present? =====
-          if not exist "%MERGED_DIR%\avutil-60.dll" exit /b 1
+          for %%D in (avutil-60 avcodec-62) do (
+            echo ===== %%D.dll : headers =====
+            dumpbin /headers "%MERGED_DIR%\%%D.dll" | findstr /i "machine ARM64X ARM64EC"
+            echo ===== %%D.dll : loadconfig =====
+            dumpbin /loadconfig "%MERGED_DIR%\%%D.dll" | findstr /i "hybrid ARM64X dispatch"
+            if not exist "%MERGED_DIR%\%%D.dll" exit /b 1
+          )
+          echo ===== avcodec exports (sample) =====
+          dumpbin /exports "%MERGED_DIR%\avcodec-62.dll" | findstr /i "avcodec_"
           echo OK
 
-      - name: Upload merged DLL + stage (for inspection)
+      - name: Upload merged DLLs (for inspection)
         if: always()
         uses: actions/upload-artifact@v4
         with:
