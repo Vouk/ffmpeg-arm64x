@@ -88,12 +88,29 @@ param(
     [string] $OutputDir,
 
     # Prefix mit den abgelegten Hardware-Headern (AMF + nv-codec), so wie
-    # scripts/lib/HwHeaders.psm1 ihn erzeugt: <HwHeadersDir>\include\AMF,
+    # scripts/install-hwheaders.ps1 ihn erzeugt: <HwHeadersDir>\include\AMF,
     # <HwHeadersDir>\include\ffnvcodec und
     # <HwHeadersDir>\lib\pkgconfig\ffnvcodec.pc. Fehlt der Pfad, bricht
     # configure fuer --enable-amf/--enable-nvenc/--enable-nvdec ab.
     [Parameter()]
     [string] $HwHeadersDir,
+
+    # MERGED-ARM64X-Modus: Wenn gesetzt, laeuft die Capture-Variante fuer den
+    # True-Merge (scripts/merge-arm64x-merged.ps1) statt des Forwarder-Builds:
+    #   * configure bekommt /LINKREPROFULLPATHRSP (link.exe schreibt die EXAKTEN
+    #     Linker-Eingaben je DLL),
+    #   * die 7 Kern-DLLs werden EINZELN gelinkt und je DLL die rsp als
+    #     <LinkReproDir>\<lib>.<arch>.rsp gesichert,
+    #   * KEIN 'make install' noetig; der Objektbaum bleibt stehen.
+    # Leer => klassischer Forwarder-Build (unveraendert, Fallback).
+    [Parameter()]
+    [string] $LinkReproDir,
+
+    # pkg-config-Binary fuer FFmpegs configure. Default /usr/bin/pkgconf, damit
+    # NICHT versehentlich das kaputte Strawberry-Perl-pkg-config aus dem
+    # geerbten Windows-PATH gewaehlt wird (schlug ffnvcodec-Erkennung).
+    [Parameter()]
+    [string] $PkgConfig = '/usr/bin/pkgconf',
 
     [Parameter()]
     [string] $Msys2Bash = 'C:\msys64\usr\bin\bash.exe',
@@ -177,7 +194,9 @@ function Get-FFmpegBuildPlan {
         [Parameter(Mandatory)][string] $OutputDir,
         [Parameter(Mandatory)][string] $Msys2Bash,
         [Parameter(Mandatory)][int] $Jobs,
-        [string] $HwHeadersDir
+        [string] $HwHeadersDir,
+        [string] $LinkReproDir,
+        [string] $PkgConfig = '/usr/bin/pkgconf'
     )
 
     $archKey = $Arch.ToLowerInvariant()
@@ -199,6 +218,20 @@ function Get-FFmpegBuildPlan {
     $configureArgs.Add("--bindir=$prefixPosix/bin")
     $configureArgs.Add("--libdir=$prefixPosix/lib")
     $configureArgs.Add("--incdir=$prefixPosix/include")
+
+    # pkg-config explizit festnageln (MSYS2 pkgconf), damit NICHT das kaputte
+    # Strawberry-Perl-pkg-config aus dem geerbten Windows-PATH gewaehlt wird.
+    if (-not [string]::IsNullOrWhiteSpace($PkgConfig)) {
+        $configureArgs.Add("--pkg-config=$PkgConfig")
+    }
+
+    # MERGED-Modus: /LINKREPROFULLPATHRSP in die Linker-Flags, damit link.exe
+    # je DLL die exakte Eingabeliste (objs/libs/def, absolute Pfade) schreibt.
+    # Kurzer Zielpfad (MAX_PATH-Grenze der rsp-Eintraege).
+    if (-not [string]::IsNullOrWhiteSpace($LinkReproDir)) {
+        $lrPosix = ConvertTo-Msys2Path -Path (Join-Path $LinkReproDir 'cur.rsp')
+        $configureArgs.Add("--extra-ldflags=/LINKREPROFULLPATHRSP:$lrPosix")
+    }
 
     # Hardware-Header (AMF + nv-codec, von scripts/install-hwheaders.ps1
     # abgelegt): AMF ueber den include-Pfad (FFmpeg inkludiert <AMF/core/
@@ -279,18 +312,64 @@ function Get-FFmpegBuildPlan {
         )
     } else { @() }
 
-    $bashLines = @(
-        'set -euo pipefail'
-        $pkgPathLine
-        $pkgDiag
-        "cd $quotedSource"
-        $distclean
-        "./configure $quotedConfigureArgs"
-        $cfgMakDiag
-    ) + $ecForce + @(
-        "make -j$Jobs $makeOverrides"
-        "make install $makeOverrides"
-    )
+    if ([string]::IsNullOrWhiteSpace($LinkReproDir)) {
+        # Klassischer Forwarder-Build: alles bauen + installieren.
+        $bashLines = @(
+            'set -euo pipefail'
+            $pkgPathLine
+            $pkgDiag
+            "cd $quotedSource"
+            $distclean
+            "./configure $quotedConfigureArgs"
+            $cfgMakDiag
+        ) + $ecForce + @(
+            "make -j$Jobs $makeOverrides"
+            "make install $makeOverrides"
+        )
+    }
+    else {
+        # MERGED-Modus: configure, dann die 7 Kern-DLLs EINZELN linken und je
+        # DLL die /LINKREPROFULLPATHRSP-Datei (cur.rsp) als <lib>.<arch>.rsp
+        # sichern. Kein 'make install' -- der Objektbaum bleibt stehen, die
+        # Capture (merge-arm64x-merged.ps1) liest die rsp als autoritative
+        # Objekt-/Lib-Liste.
+        $lrDirPosix = ConvertTo-Msys2Path -Path $LinkReproDir
+        # Reihenfolge egal fuer die Capture; make baut Abhaengigkeiten je Ziel
+        # transitiv, aber da wir EINZELN linken, haelt cur.rsp nach jedem Ziel
+        # die Eingaben GENAU dieses Ziels. Basisnamen (versioniert) der 7 Libs.
+        $targets = @(
+            @{ Dir = 'libavutil';     Dll = 'libavutil/avutil-60.dll';         Key = 'avutil-60' }
+            @{ Dir = 'libswscale';    Dll = 'libswscale/swscale-9.dll';        Key = 'swscale-9' }
+            @{ Dir = 'libswresample'; Dll = 'libswresample/swresample-6.dll';  Key = 'swresample-6' }
+            @{ Dir = 'libavcodec';    Dll = 'libavcodec/avcodec-62.dll';       Key = 'avcodec-62' }
+            @{ Dir = 'libavformat';   Dll = 'libavformat/avformat-62.dll';     Key = 'avformat-62' }
+            @{ Dir = 'libavfilter';   Dll = 'libavfilter/avfilter-11.dll';     Key = 'avfilter-11' }
+            @{ Dir = 'libavdevice';   Dll = 'libavdevice/avdevice-62.dll';     Key = 'avdevice-62' }
+        )
+        $buildLines = [System.Collections.Generic.List[string]]::new()
+        foreach ($t in $targets) {
+            # Vor jedem Ziel cur.rsp leeren, Ziel linken, rsp sichern.
+            $buildLines.Add("rm -f '$lrDirPosix/cur.rsp'")
+            $buildLines.Add("make -j$Jobs $makeOverrides $($t.Dll)")
+            $buildLines.Add("cp '$lrDirPosix/cur.rsp' '$lrDirPosix/$($t.Key).$archKey.rsp'")
+            $buildLines.Add("echo '---- rsp $($t.Key) ($archKey) ----'; wc -l '$lrDirPosix/$($t.Key).$archKey.rsp' || true")
+        }
+        # Zusaetzlich die Tools (ffmpeg/ffprobe) bauen -- sie bleiben native
+        # ARM64 (nur aus der ARM64-Ansicht uebernommen).
+        if ($archKey -eq 'arm64') {
+            $buildLines.Add("make -j$Jobs $makeOverrides ffmpeg.exe ffprobe.exe || make -j$Jobs $makeOverrides ffmpeg ffprobe || true")
+        }
+
+        $bashLines = @(
+            'set -euo pipefail'
+            $pkgPathLine
+            $pkgDiag
+            "cd $quotedSource"
+            $distclean
+            "./configure $quotedConfigureArgs"
+            $cfgMakDiag
+        ) + $ecForce + @($buildLines.ToArray())
+    }
     $bashScript = ($bashLines -join "`n")
 
     # Umgebungsvariablen für den bash-Aufruf. MSYS2_PATH_TYPE=inherit reicht die
@@ -315,10 +394,14 @@ function Get-FFmpegBuildPlan {
         Msys2Bash      = $Msys2Bash
         Jobs           = $Jobs
         Env            = $envVars
+        Merged         = (-not [string]::IsNullOrWhiteSpace($LinkReproDir))
+        LinkReproDir   = $LinkReproDir
     }
 }
 
 # --- Ablauf -----------------------------------------------------------------
+
+if ($LinkReproDir) { New-Item -ItemType Directory -Force -Path $LinkReproDir | Out-Null }
 
 $plan = Get-FFmpegBuildPlan `
     -Arch $Arch `
@@ -326,7 +409,9 @@ $plan = Get-FFmpegBuildPlan `
     -OutputDir $OutputDir `
     -Msys2Bash $Msys2Bash `
     -Jobs $Jobs `
-    -HwHeadersDir $HwHeadersDir
+    -HwHeadersDir $HwHeadersDir `
+    -LinkReproDir $LinkReproDir `
+    -PkgConfig $PkgConfig
 
 Write-Verbose "FFmpeg-Build-Plan: Arch=$($plan.Arch) Prefix=$($plan.Prefix)"
 
@@ -388,12 +473,27 @@ if ($LASTEXITCODE -ne 0) {
     throw "FFmpeg-Build fehlgeschlagen (LGPL/$($plan.Arch)): bash-Exit-Code $LASTEXITCODE."
 }
 
-# Sanity-Check: ffmpeg.exe/ffprobe.exe und mindestens eine DLL erzeugt?
+# Sanity-Check: ffmpeg.exe/ffprobe.exe. Im Forwarder-Build installiert
+# 'make install' sie unter <prefix>/bin. Im MERGED-Modus bauen wir sie NUR in
+# der arm64-Ansicht (native ARM64-Tools) direkt im Quellbaum -- dort pruefen.
 $binDir = Join-Path $plan.Prefix 'bin'
-foreach ($exe in @('ffmpeg.exe', 'ffprobe.exe')) {
-    $exePath = Join-Path $binDir $exe
-    if (-not (Test-Path -LiteralPath $exePath)) {
-        throw "Erwartete Ausführbare fehlt nach dem Build: '$exePath'."
+if ($plan.Merged) {
+    if ($plan.Arch -eq 'arm64') {
+        $srcExeOk = $false
+        foreach ($exe in @('ffmpeg.exe', 'ffprobe.exe', 'ffmpeg', 'ffprobe')) {
+            if (Test-Path -LiteralPath (Join-Path $SourceDir $exe)) { $srcExeOk = $true }
+        }
+        if (-not $srcExeOk) {
+            Write-Host "WARN: ffmpeg/ffprobe nicht im Quellbaum gefunden (werden spaeter im Merge uebernommen)."
+        }
+    }
+}
+else {
+    foreach ($exe in @('ffmpeg.exe', 'ffprobe.exe')) {
+        $exePath = Join-Path $binDir $exe
+        if (-not (Test-Path -LiteralPath $exePath)) {
+            throw "Erwartete Ausführbare fehlt nach dem Build: '$exePath'."
+        }
     }
 }
 
@@ -406,7 +506,10 @@ foreach ($exe in @('ffmpeg.exe', 'ffprobe.exe')) {
 #   .lib    : UNversioniert (avcodec.lib) -- Trailing -<zahl> entfernen.
 $libOut = Join-Path $plan.Prefix 'lib'
 New-Item -ItemType Directory -Force -Path $libOut | Out-Null
-$dllBases = Get-ChildItem -LiteralPath $binDir -Filter '*.dll' -File | ForEach-Object { $_.BaseName }
+# Im MERGED-Modus gibt es kein 'make install'; die Objekt-/Lib-/.def-Eingaben
+# liest der Merge direkt aus der /LINKREPROFULLPATHRSP. Dieser Forwarder-
+# Kopierschritt entfaellt dann (bin/ enthaelt keine DLLs).
+$dllBases = if ($plan.Merged) { @() } else { Get-ChildItem -LiteralPath $binDir -Filter '*.dll' -File | ForEach-Object { $_.BaseName } }
 $defCount = 0
 $libCount = 0
 foreach ($base in $dllBases) {

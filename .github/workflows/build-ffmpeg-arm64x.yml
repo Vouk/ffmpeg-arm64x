@@ -1,10 +1,13 @@
 # =============================================================================
 #  ARM64X-FFmpeg-8-Build (LGPL) -> ein MSI-Installer
 #
-#  Dieser Workflow baut FFmpeg 8 als ARM64X-Hybrid-DLLs in der LGPL-Variante
-#  (Shared Libraries, OHNE GPL-Encoder, aber MIT den Hardware-Encodern AMF und
-#  NVENC/NVDEC) und erzeugt daraus genau einen MSI-Installer. Er laeuft
-#  AUSSCHLIESSLICH manuell
+#  Dieser Workflow baut FFmpeg 8 als ECHTE Single-File-ARM64X-Hybrid-DLLs
+#  (je Bibliothek EIN File mit ARM64- UND ARM64EC-Code, KEINE Forwarder) in der
+#  LGPL-Variante (Shared Libraries, OHNE GPL-Encoder, aber MIT den
+#  Hardware-Encodern AMF und NVENC/NVDEC) und erzeugt daraus genau einen
+#  MSI-Installer. Der Forwarder-Pfad (scripts/merge-arm64x.ps1 +
+#  verify-arm64x.ps1) bleibt als Fallback im Repo. Er laeuft AUSSCHLIESSLICH
+#  manuell
 #  (workflow_dispatch) auf einem windows-2022-Runner, der ueber die
 #  amd64->arm64-Cross-Tools (vcvarsamd64_arm64.bat) nach ARM64 cross-kompiliert
 #  und die arm64- sowie die arm64ec-Ansicht per /MACHINE:ARM64X-Link zum Hybrid
@@ -58,6 +61,9 @@ env:
   AMF_HEADERS: ${{ github.workspace }}\src\AMF\amf\public\include
   NVCODEC_HEADERS: ${{ github.workspace }}\src\nv-codec-headers\include
   HW_HEADERS: ${{ github.workspace }}\out\hwheaders
+  # Kurzer Pfad fuer die /LINKREPROFULLPATHRSP-Dateien (MAX_PATH-Grenze der
+  # rsp-Eintraege). Enthaelt je Lib+Arch die exakte Linker-Eingabeliste.
+  LINKREPRO_DIR: C:\lr
 
 jobs:
   build:
@@ -282,6 +288,21 @@ jobs:
           "FFMPEG_SRC=$ffmpegSrc" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "FFmpeg-Quelle bereit: $ffmpegSrc"
 
+          # MERGED-ARM64X: Der True-Merge braucht die Objekte BEIDER Ansichten
+          # GLEICHZEITIG. Da jede Ansicht ihren Quellbaum mit frischen Objekten
+          # baut (make distclean), bekommt JEDE Ansicht einen EIGENEN Quellbaum,
+          # damit die arm64-Objekte beim arm64ec-Build nicht ueberschrieben
+          # werden. Beide Baeume aus dem bereits aufbereiteten $ffmpegSrc klonen.
+          $srcArm64   = Join-Path $env:SRC_DIR 'ffmpeg-arm64'
+          $srcArm64ec = Join-Path $env:SRC_DIR 'ffmpeg-arm64ec'
+          foreach ($d in @($srcArm64, $srcArm64ec)) {
+            if (Test-Path -LiteralPath $d) { Remove-Item -LiteralPath $d -Recurse -Force }
+            Copy-Item -LiteralPath $ffmpegSrc -Destination $d -Recurse
+          }
+          "FFMPEG_SRC_ARM64=$srcArm64"     | Out-File -FilePath $env:GITHUB_ENV -Append
+          "FFMPEG_SRC_ARM64EC=$srcArm64ec" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Getrennte Quellbaeume: $srcArm64 ; $srcArm64ec"
+
       # ---------------------------------------------------------------------
       #  6. Hardware-Encoding-Header beziehen (AMD AMF + NVIDIA nv-codec):
       #     Beide Repos (shallow) klonen, damit --enable-amf/--enable-nvenc/
@@ -337,68 +358,58 @@ jobs:
       #     ein Durchlauf fehl, endet der Workflow ohne MSI. MSYS2 mit
       #     MSVC-Toolchain (MSYS2_PATH_TYPE=inherit im Skript).
       # ---------------------------------------------------------------------
-      - name: Build FFmpeg LGPL (arm64 + arm64ec)
+      - name: Build FFmpeg LGPL (arm64 + arm64ec, MERGED capture)
         shell: cmd
         run: |
+          if not exist "%LINKREPRO_DIR%" mkdir "%LINKREPRO_DIR%"
           call "%VCVARS%"
+          if errorlevel 1 exit /b 1
+          rem Jede Ansicht in EIGENEM Quellbaum, damit beide Objektbaeume fuer
+          rem den True-Merge gleichzeitig vorliegen. -LinkReproDir aktiviert die
+          rem /LINKREPROFULLPATHRSP-Capture (exakte Linker-Eingaben je DLL).
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-ffmpeg.ps1" ^
+            -Arch arm64 -SourceDir "%FFMPEG_SRC_ARM64%" -OutputDir "%OUT_DIR%\ffmpeg" ^
+            -HwHeadersDir "%HW_HEADERS%" -LinkReproDir "%LINKREPRO_DIR%"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-ffmpeg.ps1" ^
-            -Arch arm64 -SourceDir "%FFMPEG_SRC%" -OutputDir "%OUT_DIR%\ffmpeg" -HwHeadersDir "%HW_HEADERS%"
+            -Arch arm64ec -SourceDir "%FFMPEG_SRC_ARM64EC%" -OutputDir "%OUT_DIR%\ffmpeg" ^
+            -HwHeadersDir "%HW_HEADERS%" -LinkReproDir "%LINKREPRO_DIR%"
           if errorlevel 1 exit /b 1
-          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\build-ffmpeg.ps1" ^
-            -Arch arm64ec -SourceDir "%FFMPEG_SRC%" -OutputDir "%OUT_DIR%\ffmpeg" -HwHeadersDir "%HW_HEADERS%"
-          if errorlevel 1 exit /b 1
+          rem config.h der arm64-Ansicht fuer die Faehigkeitspruefung sichern.
+          echo ---- LinkRepro-Dateien ----
+          dir "%LINKREPRO_DIR%\*.rsp"
 
       # ---------------------------------------------------------------------
-      #  9. Pre-Merge-ABI-Verifikation (R2.4/R2.5): BEVOR gemergt wird, jede
-      #     Einzel-Ansicht daraufhin pruefen, dass sie WIRKLICH die erwartete
-      #     ABI hat -- die arm64-Ansicht reines ARM64, die arm64ec-Ansicht
-      #     reines ARM64EC (`A641 machine (ARM64EC)`).
+      # 10. ARM64X-Merge (TRUE / Single-File): je Kern-Bibliothek EIN
+      #     /machine:arm64x-Link, der ARM64- UND ARM64EC-Objekte zusammenfuehrt
+      #     (keine Forwarder). Objekt-/Lib-/.def-Eingaben kommen exakt aus den
+      #     /LINKREPROFULLPATHRSP-Dateien. Reihenfolge nach Abhaengigkeit; jede
+      #     Lib linkt gegen die bereits gemergten Import-Libs der Vorgaenger.
+      #     Ergebnis: out\ffmpeg\arm64x\bin\<lib>-<ver>.dll (7 Single-File-DLLs).
+      #     (Fallback-Forwarder: scripts/merge-arm64x.ps1, hier NICHT genutzt.)
       # ---------------------------------------------------------------------
-      - name: Verify pre-merge ABI views
+      - name: Merge ARM64X (true single-file)
         shell: cmd
         run: |
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
-          rem arm64-Ansicht MUSS reines ARM64 sein.
-          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\verify-arm64x.ps1" ^
-            -BinDir "%OUT_DIR%\ffmpeg\arm64\bin" -ExpectedAbi ARM64
-          if errorlevel 1 exit /b 1
-          rem arm64ec-Ansicht MUSS reines ARM64EC sein.
-          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\verify-arm64x.ps1" ^
-            -BinDir "%OUT_DIR%\ffmpeg\arm64ec\bin" -ExpectedAbi ARM64EC
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\merge-arm64x-merged.ps1" ^
+            -LinkReproDir "%LINKREPRO_DIR%" ^
+            -OutputDir "%OUT_DIR%\ffmpeg\arm64x\bin" ^
+            -Arm64BinDir "%OUT_DIR%\ffmpeg\arm64\bin"
           if errorlevel 1 exit /b 1
 
       # ---------------------------------------------------------------------
-      # 10. ARM64X-Merge (R2.3/R3.2): die arm64- und arm64ec-Ansicht zu
-      #     ARM64X-Hybriden verschmelzen (link.exe /MACHINE:ARM64X fuer DLLs,
-      #     lib.exe /MACHINE:ARM64X fuer .lib). merge-arm64x.ps1 paart je
-      #     Basisname. Ergebnis unter out\ffmpeg\arm64x\bin.
+      # 11. ARM64X-Verifikation (Single-File): je gemergte DLL
+      #     (ARM64X)-Header-Marker + ARM64X-Hybrid-Loadconfig + Export-Paritaet
+      #     gegen die Quell-.def. ffmpeg.exe/ffprobe.exe nur auf Praesenz.
       # ---------------------------------------------------------------------
-      - name: Merge ARM64X
+      - name: Verify ARM64X (true single-file)
         shell: cmd
         run: |
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
-          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\merge-arm64x.ps1" ^
-            -Arm64Dir "%OUT_DIR%\ffmpeg\arm64\bin" ^
-            -Arm64ecDir "%OUT_DIR%\ffmpeg\arm64ec\bin" ^
-            -Arm64LibDir "%OUT_DIR%\ffmpeg\arm64\lib" ^
-            -Arm64ecLibDir "%OUT_DIR%\ffmpeg\arm64ec\lib" ^
-            -OutputDir "%OUT_DIR%\ffmpeg\arm64x\bin"
-          if errorlevel 1 exit /b 1
-
-      # ---------------------------------------------------------------------
-      # 11. ARM64X-Verifikation (R2.4/R2.5/R3.3): jede gemergte DLL sowie
-      #     ffmpeg.exe/ffprobe.exe muss den (ARM64X)-Marker an der Maschinenzeile
-      #     zeigen; zu jeder DLL muss eine gleichnamige .lib existieren.
-      # ---------------------------------------------------------------------
-      - name: Verify ARM64X
-        shell: cmd
-        run: |
-          call "%VCVARS%"
-          if errorlevel 1 exit /b 1
-          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\verify-arm64x.ps1" ^
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\verify-arm64x-merged.ps1" ^
             -BinDir "%OUT_DIR%\ffmpeg\arm64x\bin"
           if errorlevel 1 exit /b 1
 
