@@ -128,7 +128,7 @@ jobs:
           if errorlevel 1 exit /b 1
           set "MSYS2_PATH_TYPE=inherit"
           bash -lc "HW=$(cygpath -u \"$HW_HEADERS\"); echo '--- pkgconfig diag ---'; ls -la \"$HW/lib/pkgconfig\" || true; cat \"$HW/lib/pkgconfig/ffnvcodec.pc\" || true; export PKG_CONFIG_PATH=\"$HW/lib/pkgconfig\"; which pkg-config pkgconf || true; pkg-config --exists ffnvcodec && echo FFNVCODEC_FOUND || echo FFNVCODEC_MISSING; pkg-config --cflags ffnvcodec || true; ls \"$HW/include/ffnvcodec\" | head || true"
-          bash -lc "cd \"$FFMPEG_SRC\" && HW=$(cygpath -u \"$HW_HEADERS\") && export PKG_CONFIG_PATH=\"$HW/lib/pkgconfig\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --pkg-config-flags=--static --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --enable-amf --enable-nvenc --enable-nvdec --extra-cflags=-I$HW/include || (echo '==== config.log tail ===='; tail -40 ffbuild/config.log; exit 1)"
+          bash -lc "cd \"$FFMPEG_SRC\" && HW=$(cygpath -u \"$HW_HEADERS\") && export PKG_CONFIG_PATH=\"$HW/lib/pkgconfig\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --pkg-config=/usr/bin/pkgconf --pkg-config-flags=--static --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --enable-amf --enable-nvenc --enable-nvdec --extra-cflags=-I$HW/include || (echo '==== config.log tail ===='; tail -40 ffbuild/config.log; exit 1)"
           if errorlevel 1 exit /b 1
           call "%VCVARS%"
           bash -lc "cd \"$FFMPEG_SRC\" && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll"
@@ -149,7 +149,7 @@ jobs:
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
           set "MSYS2_PATH_TYPE=inherit"
-          bash -lc "cd \"$FFMPEG_SRC\" && HW=$(cygpath -u \"$HW_HEADERS\") && export PKG_CONFIG_PATH=\"$HW/lib/pkgconfig\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --pkg-config-flags=--static --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --enable-amf --enable-nvenc --enable-nvdec --extra-cflags=\"-arm64EC -I$HW/include\" --extra-ldflags=-machine:arm64ec && printf '\nCFLAGS += -arm64EC\nLDFLAGS += -machine:arm64ec\n' >> ffbuild/config.mak && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll"
+          bash -lc "cd \"$FFMPEG_SRC\" && HW=$(cygpath -u \"$HW_HEADERS\") && export PKG_CONFIG_PATH=\"$HW/lib/pkgconfig\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --pkg-config=/usr/bin/pkgconf --pkg-config-flags=--static --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --enable-amf --enable-nvenc --enable-nvdec --extra-cflags=\"-arm64EC -I$HW/include\" --extra-ldflags=-machine:arm64ec && printf '\nCFLAGS += -arm64EC\nLDFLAGS += -machine:arm64ec\n' >> ffbuild/config.mak && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
             -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64ec -StageDir "%STAGE_DIR%" -LibBase avutil-60
