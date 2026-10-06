@@ -2,20 +2,16 @@
 <!--
   Product.wxs — WiX v3.x Produktdefinition fuer den ARM64X-FFmpeg-8-Installer.
 
-  Eine gemeinsame Definition, die per WiX-Praeprozessor-Variable $(var.Variant)
-  (GPL | LGPL) die passende Lizenz-RTF, den ProductName und den UpgradeCode
-  waehlt (Task 11.1 / Requirements R4, R8). Der Installer wird zweimal gebaut —
-  einmal mit -dVariant=GPL, einmal mit -dVariant=LGPL — sodass genau zwei MSI
-  entstehen (R4.4).
+  Es wird ausschliesslich die LGPL-Variante gebaut (Shared Libraries, ohne
+  externe Encoder). Es entsteht genau EIN MSI.
 
   Aufruf (Beispiel, in der CI-Paketierung):
-      candle Product.wxs FfmpegFiles.wxs -dVariant=GPL -dBinSourceDir=<...> -ext WixUtilExtension
-      light  Product.wixobj FfmpegFiles.wixobj -o ffmpeg-8-gpl-arm64x.msi -ext WixUIExtension -ext WixUtilExtension
+      candle Product.wxs FfmpegFiles.wxs -dBinSourceDir=<...> -ext WixUtilExtension
+      light  Product.wixobj FfmpegFiles.wixobj -o ffmpeg-8-lgpl-arm64x.msi -ext WixUIExtension -ext WixUtilExtension
 
-  Voraussetzungen (Extensions, konsistent mit design.md C4):
-    * WixUIExtension   — liefert WixUI_InstallDir inkl. scrollbarer Lizenzseite
-                         (R8.1/R8.2) mit Zustimmungs-Gate fuer "Weiter" (R8.3).
-    * WixUtilExtension — util:-Namespace (konsistent mit dem VKDRP-Repo).
+  Voraussetzungen (Extensions):
+    * WixUIExtension   — liefert WixUI_InstallDir inkl. scrollbarer Lizenzseite.
+    * WixUtilExtension — util:-Namespace.
 
   Der Namespace 2006/wi kennzeichnet WiX Toolset v3.x.
 -->
@@ -24,30 +20,13 @@
 
   <!--
     ==========================================================================
-    Varianten-Weiche (R4, R8): $(var.Variant) MUSS beim candle-Aufruf via
-    -dVariant=GPL bzw. -dVariant=LGPL gesetzt sein. Daraus werden ProductName,
-    UpgradeCode und die anzuzeigende Lizenz-RTF abgeleitet.
-
-    Die UpgradeCodes sind je Variante fest (stabil ueber Versionen hinweg),
-    damit MajorUpgrade dieselbe Variante ersetzt, GPL und LGPL aber als
-    getrennte Produkte nebeneinander verwaltet werden.
+    Produktkonstanten (LGPL). Der UpgradeCode ist fest (stabil ueber Versionen
+    hinweg), damit MajorUpgrade eine vorhandene Installation ersetzt.
     ==========================================================================
   -->
-  <?ifndef Variant ?>
-    <?error Die Praeprozessor-Variable 'Variant' muss gesetzt sein: -dVariant=GPL oder -dVariant=LGPL ?>
-  <?endif?>
-
-  <?if $(var.Variant) = GPL ?>
-    <?define ProductName = "FFmpeg 8 (GPL, ARM64X)" ?>
-    <?define UpgradeCode = "6E3B4C2A-1D5F-4A7B-9C10-2F8E6A0B3D41" ?>
-    <?define LicenseRtf  = "license\gpl-3.0.rtf" ?>
-  <?elseif $(var.Variant) = LGPL ?>
-    <?define ProductName = "FFmpeg 8 (LGPL, ARM64X)" ?>
-    <?define UpgradeCode = "9A72F0E5-8B3C-4D61-A0F2-5C7D1E9B4028" ?>
-    <?define LicenseRtf  = "license\lgpl-3.0.rtf" ?>
-  <?else?>
-    <?error Unbekannte Variant '$(var.Variant)'. Erlaubt sind GPL oder LGPL. ?>
-  <?endif?>
+  <?define ProductName = "FFmpeg 8 (LGPL, ARM64X)" ?>
+  <?define UpgradeCode = "9A72F0E5-8B3C-4D61-A0F2-5C7D1E9B4028" ?>
+  <?define LicenseRtf  = "license\lgpl-3.0.rtf" ?>
 
   <!--
     Anzeigeversion der MSI/Artefakte. Von der CI ueberschreibbar via
@@ -82,7 +61,7 @@
              Compressed="yes"
              InstallScope="perMachine"
              Platform="x64"
-             Description="FFmpeg 8 ($(var.Variant)) als ARM64X-Hybrid" />
+             Description="FFmpeg 8 (LGPL) als ARM64X-Hybrid" />
 
     <MajorUpgrade DowngradeErrorMessage="Eine neuere Version von $(var.ProductName) ist bereits installiert."
                   AllowSameVersionUpgrades="yes"
@@ -138,7 +117,7 @@
     </Directory>
 
     <Feature Id="MainFeature"
-             Title="FFmpeg 8 ($(var.Variant))"
+             Title="FFmpeg 8 (LGPL)"
              Level="1"
              ConfigurableDirectory="INSTALLDIR"
              Absent="disallow"
@@ -273,7 +252,7 @@
       Die Zustimmung ist jedoch NICHT mehr erzwungen: LicenseAccepted ist per
       Default "1" (siehe oben), daher ist "Weiter" sofort aktiv und der Nutzer
       muss die Lizenz nicht aktiv bestaetigen. Der Lizenztext bleibt sichtbar
-      (informativ). WixUILicenseRtf waehlt die variantenspezifische RTF.
+      (informativ). WixUILicenseRtf waehlt die LGPL-RTF.
       ======================================================================
     -->
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
@@ -294,7 +273,7 @@
     <DirectoryRef Id="BINDIR">
       <Component Id="PathEnvMarker" Guid="C1D2E3F4-5A6B-4C7D-8E9F-0A1B2C3D4E5F">
         <RegistryValue Root="HKLM"
-                       Key="SOFTWARE\ARM64X-FFmpeg-Build\$(var.Variant)"
+                       Key="SOFTWARE\ARM64X-FFmpeg-Build\LGPL"
                        Name="Installed"
                        Type="integer"
                        Value="1"

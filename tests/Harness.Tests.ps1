@@ -43,11 +43,9 @@ Describe 'Repository-Gerüst' {
         (Test-Path (Join-Path $script:RepoRoot '.gitmodules')) | Should -BeFalse
     }
 
-    It 'enthält die Platzhalter-Lizenzdateien' {
+    It 'enthält die LGPL-Lizenzdateien' {
         $licenses = @(
-            'licenses/LICENSE.GPL.txt',
             'licenses/LICENSE.LGPL.txt',
-            'installer/license/gpl-3.0.rtf',
             'installer/license/lgpl-3.0.rtf'
         )
         foreach ($l in $licenses) {

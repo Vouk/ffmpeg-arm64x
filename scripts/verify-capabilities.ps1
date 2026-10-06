@@ -1,72 +1,47 @@
 <#
 .SYNOPSIS
-    Prüft die gemeldeten Encoder-/Decoder-/Hardware-Fähigkeiten eines gebauten
-    `ffmpeg.exe` je Lizenz-Variante (gpl|lgpl).
+    Prüft die Build-Fähigkeiten eines gebauten FFmpeg (LGPL) anhand von FFmpegs
+    config.h/config_components.h.
 
 .DESCRIPTION
-    Dieses Skript setzt Task 9.4 um (Design: Testing Strategy ->
-    "Encoder-/Decoder-Fähigkeitsprüfung", Components -> C2
-    scripts/verify-capabilities.ps1). Es ruft das gebaute `ffmpeg.exe` je
-    Variante mit `-encoders`, `-decoders` und `-hwaccels` auf, parst die
-    Ausgabe und stellt sicher, dass die je Variante erwarteten Fähigkeiten
-    vorhanden (bzw. bei der LGPL-Variante die GPL-Codecs abwesend) sind:
+    Es wird ausschliesslich die LGPL-Variante gebaut, als Shared Libraries, OHNE
+    GPL-Encoder (libx264/libx265), aber MIT den Hardware-Encodern AMF (AMD) und
+    NVENC/NVDEC (NVIDIA). Diese Pruefung stellt sicher, dass der Build:
+      * KEINE GPL-Encoder (libx264/libx265) enthaelt, und
+      * die Hardware-Encoder AMF + NVENC sowie die NVIDIA-Hardware-
+        Beschleunigung (CUDA/NVDEC) WIRKLICH enthaelt.
 
-      - GPL  (R6.1/R6.2):
-          * `-encoders` listet `libx264` UND `libx265`
-      - LGPL (R6.5):
-          * `libx264`/`libx265` erscheinen NICHT
-      - Beide (R5.1–R5.4):
-          * `-encoders`/`-hwaccels` listet AMF- UND NVENC/NVDEC-Einträge
+    Da ARM64-ffmpeg.exe auf dem x64-Runner NICHT ausfuehrbar ist, erfolgt die
+    Pruefung STATISCH aus den von configure erzeugten Headern config.h und
+    config_components.h. Die reine Assertion-Logik ist in
+    `Test-FFmpegConfigCapabilities` gekapselt und ohne echtes Binary testbar.
 
     Bei einer Abweichung bricht das Skript fail-fast ab und benennt die konkret
     fehlende oder unerwartet vorhandene Fähigkeit.
 
-    Testbarkeit: Das echte `ffmpeg.exe` existiert nur auf dem CI-Runner. Damit
-    die OUTPUT-PARSING- und Assertion-Logik lokal ohne echtes Binary geprüft
-    werden kann, ist sie vollständig in die reine Funktion
-    `Test-FFmpegCapabilities` gekapselt. Diese nimmt die erfassten Texte von
-    `-encoders`/`-decoders`/`-hwaccels` plus die Variante entgegen und liefert
-    ein Ergebnisobjekt (Success + benannte Abweichungen), ohne Seiteneffekte.
-    Der Skript-Rumpf erfasst auf CI die echte ffmpeg-Ausgabe und reicht sie an
-    diese Funktion weiter.
-
-.PARAMETER FFmpegPath
-    Pfad zum gebauten `ffmpeg.exe`, das aufgerufen wird. Auf CI erforderlich.
-
-.PARAMETER Variant
-    Lizenz-Variante: 'gpl' oder 'lgpl' (case-insensitiv).
+.PARAMETER ConfigPath
+    Pfad zu FFmpegs config.h bzw. zu einem Verzeichnis, das config.h und
+    config_components.h enthaelt. Auf CI erforderlich.
 
 .OUTPUTS
-    [pscustomobject] mit dem Ergebnis von Test-FFmpegCapabilities. Bei einer
-    Abweichung wird zusätzlich ein terminierender Fehler ausgelöst (fail-fast).
+    [pscustomobject] mit dem Ergebnis von Test-FFmpegConfigCapabilities. Bei
+    einer Abweichung wird zusätzlich ein terminierender Fehler ausgelöst.
 
 .EXAMPLE
-    ./scripts/verify-capabilities.ps1 -FFmpegPath C:\out\gpl\arm64\bin\ffmpeg.exe -Variant gpl
+    ./scripts/verify-capabilities.ps1 -ConfigPath C:\out\ffmpeg\arm64
 
 .NOTES
     Feature: arm64x-ffmpeg-build
-    Task: 9.4
-    Requirements: 6.1, 6.2, 6.3, 6.5, 5.1, 5.2, 5.3, 5.4
-    Design: Testing Strategy -> Encoder-/Decoder-Fähigkeitsprüfung (Integration),
-            Components -> C2 (scripts/verify-capabilities.ps1),
-            C3 (Externe-Bibliotheken-Layer / LGPL-Zusammensetzung).
+    Design: Testing Strategy -> Fähigkeitsprüfung (statisch aus config.h),
+            Components -> C2 (scripts/verify-capabilities.ps1).
 #>
 [CmdletBinding()]
 [OutputType([pscustomobject])]
 param(
-    # Pfad zu FFmpegs config.h (statische Faehigkeitspruefung). Auf CI nutzen
-    # wir diesen Weg, weil ARM64-ffmpeg.exe auf dem x64-Runner nicht laeuft.
+    # Pfad zu FFmpegs config.h (statische Faehigkeitspruefung). ARM64-ffmpeg.exe
+    # laeuft nicht auf dem x64-Runner, daher der statische Weg.
     [Parameter()]
-    [string] $ConfigPath,
-
-    # Optional/Legacy: Pfad zu ffmpeg.exe (nur fuer die alte laufzeitbasierte
-    # Pruefung). Beim Dot-Sourcing in Tests irrelevant.
-    [Parameter()]
-    [string] $FFmpegPath,
-
-    [Parameter(Mandatory)]
-    [ValidateSet('gpl', 'lgpl', IgnoreCase = $true)]
-    [string] $Variant
+    [string] $ConfigPath
 )
 
 Set-StrictMode -Version Latest
@@ -75,218 +50,6 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------------------
 # Reine Parsing-/Assertion-Logik (lokal testbar, ohne echtes ffmpeg.exe)
 # ---------------------------------------------------------------------------
-
-function Get-FFmpegListedNames {
-    <#
-    .SYNOPSIS
-        Extrahiert die gelisteten Codec-/Methoden-Namen aus einer erfassten
-        `ffmpeg -encoders|-decoders|-hwaccels`-Ausgabe (reine Logik).
-    .DESCRIPTION
-        `ffmpeg -encoders`/`-decoders` geben eine Kopfzeile, eine Legende und
-        eine `------`-Trennlinie aus, danach je Codec eine Zeile der Form
-        " V..... libx264   libx264 H.264 ...". Der erste Whitespace-getrennte
-        Token nach den Fähigkeits-Flags ist der Codec-Name.
-
-        `ffmpeg -hwaccels` gibt "Hardware acceleration methods:" gefolgt von je
-        einer Methode pro Zeile aus (z. B. "cuda", "d3d11va").
-
-        Diese Funktion liefert für beide Formate die Menge der gelisteten Namen
-        als String-Array (Reihenfolge erhalten, Duplikate entfernt). Sie greift
-        nicht auf das Dateisystem oder ffmpeg zu.
-    .PARAMETER Text
-        Die erfasste, mehrzeilige ffmpeg-Ausgabe.
-    .PARAMETER Kind
-        'list'    : Encoder-/Decoder-Format (Flags-Spalte + Name),
-        'hwaccels': einfache Methodenliste unter einer Kopfzeile.
-    #>
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param(
-        [Parameter(Mandatory)]
-        [AllowEmptyString()]
-        [string] $Text,
-
-        [Parameter(Mandatory)]
-        [ValidateSet('list', 'hwaccels')]
-        [string] $Kind
-    )
-
-    $names = [System.Collections.Generic.List[string]]::new()
-    $seen = [System.Collections.Generic.HashSet[string]]::new(
-        [System.StringComparer]::OrdinalIgnoreCase)
-
-    if ([string]::IsNullOrWhiteSpace($Text)) {
-        return , ([string[]]$names.ToArray())
-    }
-
-    # Zeilenweise, unabhängig vom Zeilenende-Stil.
-    $lines = $Text -split "`r?`n"
-
-    $pastSeparator = $false
-    foreach ($rawLine in $lines) {
-        $line = $rawLine.TrimEnd()
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
-
-        if ($Kind -eq 'list') {
-            # Alles vor der "------"-Trennlinie ist Kopf/Legende und wird
-            # übersprungen. Ab der Trennlinie folgen die Codec-Zeilen.
-            if (-not $pastSeparator) {
-                if ($line -match '^\s*-{3,}\s*$') {
-                    $pastSeparator = $true
-                }
-                continue
-            }
-
-            # Codec-Zeile: führende Flags-Spalte (z. B. "V....D" / "A......"),
-            # dann Whitespace, dann der Codec-Name.
-            if ($line -match '^\s*([A-Z\.]{4,})\s+(\S+)') {
-                $name = $Matches[2]
-                if ($seen.Add($name)) { $names.Add($name) }
-            }
-        }
-        else {
-            # hwaccels: Kopfzeile überspringen, danach je Zeile eine Methode.
-            if ($line -match '(?i)hardware acceleration methods') { continue }
-            $method = $line.Trim()
-            if (-not [string]::IsNullOrWhiteSpace($method)) {
-                if ($seen.Add($method)) { $names.Add($method) }
-            }
-        }
-    }
-
-    return [string[]]$names.ToArray()
-}
-
-function Test-FFmpegCapabilities {
-    <#
-    .SYNOPSIS
-        Reine Assertion-Logik: prüft die erfassten
-        `-encoders`/`-decoders`/`-hwaccels`-Texte gegen die je Variante
-        erwarteten Fähigkeiten (Task 9.4, R5.1–R5.4, R6.1–R6.2, R6.5).
-    .DESCRIPTION
-        Nimmt die drei erfassten ffmpeg-Ausgabetexte und die Variante entgegen,
-        parst sie über Get-FFmpegListedNames und wertet die Regeln aus:
-
-          GPL:
-            * libx264 UND libx265 in -encoders vorhanden (R6.1/R6.2)
-          LGPL:
-            * libx264/libx265 in -encoders ABWESEND (R6.5)
-          Beide:
-            * AMF-Encoder (*_amf) in -encoders vorhanden (R5.1/R5.3)
-            * NVENC-Encoder (*_nvenc) in -encoders vorhanden (R5.2)
-            * NVDEC/CUDA-Hardware-Beschleunigung in -hwaccels vorhanden
-              (R5.4)
-
-        Die Funktion hat keine Seiteneffekte und ruft weder ffmpeg noch das
-        Dateisystem auf. Sie liefert ein Ergebnisobjekt mit Success und einer
-        Liste benannter Verstöße (fehlend oder unerwartet vorhanden), damit der
-        Aufrufer fail-fast mit klarer Meldung abbrechen kann.
-    .PARAMETER EncodersText
-        Erfasster Text von `ffmpeg -encoders`.
-    .PARAMETER DecodersText
-        Erfasster Text von `ffmpeg -decoders`.
-    .PARAMETER HwaccelsText
-        Erfasster Text von `ffmpeg -hwaccels`.
-    .PARAMETER Variant
-        'gpl' oder 'lgpl' (case-insensitiv).
-    .OUTPUTS
-        PSCustomObject mit:
-          Success    [bool]     — alle Regeln der Variante erfüllt
-          Variant    [string]   — normalisierte Variante
-          Violations [string[]] — benannte Verstöße (fehlend/unerwartet)
-          Encoders   [string[]] — geparste Encoder-Namen
-          Decoders   [string[]] — geparste Decoder-Namen
-          Hwaccels   [string[]] — geparste Hardware-Beschleunigungsmethoden
-          Message    [string]   — menschenlesbare Zusammenfassung
-    #>
-    [CmdletBinding()]
-    [OutputType([pscustomobject])]
-    param(
-        [Parameter(Mandatory)] [AllowEmptyString()] [string] $EncodersText,
-        [Parameter(Mandatory)] [AllowEmptyString()] [string] $DecodersText,
-        [Parameter(Mandatory)] [AllowEmptyString()] [string] $HwaccelsText,
-        [Parameter(Mandatory)]
-        [ValidateSet('gpl', 'lgpl', IgnoreCase = $true)]
-        [string] $Variant
-    )
-
-    $variantKey = $Variant.ToLowerInvariant()
-
-    $encoders = Get-FFmpegListedNames -Text $EncodersText -Kind 'list'
-    $decoders = Get-FFmpegListedNames -Text $DecodersText -Kind 'list'
-    $hwaccels = Get-FFmpegListedNames -Text $HwaccelsText -Kind 'hwaccels'
-
-    # Case-insensitive Nachschlagewerke für schnelle Prüfungen.
-    $encSet = [System.Collections.Generic.HashSet[string]]::new(
-        [string[]]$encoders, [System.StringComparer]::OrdinalIgnoreCase)
-
-    $violations = [System.Collections.Generic.List[string]]::new()
-
-    # --- GPL-only Codecs: libx264/libx265 (R6.1/R6.2 vs. R6.5) ---------------
-    $hasX264 = $encSet.Contains('libx264')
-    $hasX265 = $encSet.Contains('libx265')
-
-    if ($variantKey -eq 'gpl') {
-        if (-not $hasX264) {
-            $violations.Add("Fehlender H.264-Encoder 'libx264' in -encoders (GPL, R6.1).")
-        }
-        if (-not $hasX265) {
-            $violations.Add("Fehlender H.265-Encoder 'libx265' in -encoders (GPL, R6.2).")
-        }
-    }
-    else {
-        # LGPL: x264/x265 dürfen NICHT erscheinen (R6.5).
-        if ($hasX264) {
-            $violations.Add("Unerwarteter GPL-Encoder 'libx264' in der LGPL-Variante (R6.5).")
-        }
-        if ($hasX265) {
-            $violations.Add("Unerwarteter GPL-Encoder 'libx265' in der LGPL-Variante (R6.5).")
-        }
-    }
-
-    # --- AMF-Hardware-Encoder (beide Varianten, R5.1/R5.3) -------------------
-    # AMF-Encoder folgen dem Namensschema "<codec>_amf" (z. B. h264_amf).
-    $amfEncoders = @($encoders | Where-Object { $_ -match '(?i)_amf$' })
-    if ($amfEncoders.Count -eq 0) {
-        $violations.Add("Fehlende AMF-Hardware-Encoder in -encoders (erwartet z. B. 'h264_amf', R5.1/R5.3).")
-    }
-
-    # --- NVENC-Hardware-Encoder (beide Varianten, R5.2) ----------------------
-    # NVENC-Encoder folgen dem Namensschema "<codec>_nvenc" (z. B. h264_nvenc).
-    $nvencEncoders = @($encoders | Where-Object { $_ -match '(?i)_nvenc$' })
-    if ($nvencEncoders.Count -eq 0) {
-        $violations.Add("Fehlende NVENC-Hardware-Encoder in -encoders (erwartet z. B. 'h264_nvenc', R5.2).")
-    }
-
-    # --- NVDEC/CUDA-Hardware-Beschleunigung (beide Varianten, R5.4) ----------
-    # NVDEC wird als hwaccel "cuda" bzw. "nvdec" gemeldet.
-    $hwSet = [System.Collections.Generic.HashSet[string]]::new(
-        [string[]]$hwaccels, [System.StringComparer]::OrdinalIgnoreCase)
-    $hasNvdec = $hwSet.Contains('cuda') -or $hwSet.Contains('nvdec')
-    if (-not $hasNvdec) {
-        $violations.Add("Fehlende NVDEC/NVENC-Hardware-Beschleunigung in -hwaccels (erwartet 'cuda' oder 'nvdec', R5.4).")
-    }
-
-    $success = ($violations.Count -eq 0)
-    if ($success) {
-        $message = "Fähigkeitsprüfung für Variante '$variantKey' bestanden: " +
-                   "alle erwarteten Encoder/Decoder/Hardware-Fähigkeiten vorhanden."
-    }
-    else {
-        $message = "Fähigkeitsprüfung für Variante '$variantKey' fehlgeschlagen: " +
-                   ($violations -join ' ')
-    }
-
-    return [pscustomobject]@{
-        Success    = $success
-        Variant    = $variantKey
-        Violations = [string[]]$violations.ToArray()
-        Encoders   = [string[]]$encoders
-        Decoders   = [string[]]$decoders
-        Hwaccels   = [string[]]$hwaccels
-        Message    = $message
-    }
-}
 
 function Get-FFmpegConfigFlags {
     <#
@@ -322,86 +85,64 @@ function Get-FFmpegConfigFlags {
 function Test-FFmpegConfigCapabilities {
     <#
     .SYNOPSIS
-        Statische Faehigkeitspruefung je Variante anhand von FFmpegs config.h
-        (reine Logik, kein ffmpeg-Aufruf). Spiegelt die Regeln von
-        Test-FFmpegCapabilities, nutzt aber die kompilierten CONFIG_-Schalter.
+        Statische Faehigkeitspruefung des LGPL-Builds (mit HW-Encodern) anhand
+        von FFmpegs config.h (reine Logik, kein ffmpeg-Aufruf).
     .DESCRIPTION
         ARM64-ffmpeg.exe laeuft nicht auf dem x64-Runner; deshalb wird statt
         der Laufzeitausgabe die Build-Konfiguration geprueft:
-          GPL : CONFIG_LIBX264_ENCODER und CONFIG_LIBX265_ENCODER = 1 (R6.1/6.2)
-          LGPL: beide NICHT gesetzt (R6.5)
-          beide: mind. ein *_AMF_ENCODER (R5.1/5.3), mind. ein *_NVENC_ENCODER
-                 (R5.2), und CONFIG_CUDA oder CONFIG_NVDEC (R5.4).
+          * CONFIG_LIBX264_ENCODER / CONFIG_LIBX265_ENCODER duerfen NICHT
+            vorhanden sein (GPL-Encoder, LGPL-Build).
+          * mind. ein *_AMF_ENCODER MUSS vorhanden sein (z. B. h264_amf).
+          * mind. ein *_NVENC_ENCODER MUSS vorhanden sein (z. B. h264_nvenc).
+          * CONFIG_CUDA oder CONFIG_NVDEC MUSS vorhanden sein (NVIDIA-
+            Hardware-Beschleunigung).
     .OUTPUTS
-        PSCustomObject (Success, Variant, Violations, Message).
+        PSCustomObject (Success, Violations, Message).
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
-        [Parameter(Mandatory)][AllowEmptyString()][string] $ConfigText,
-        [Parameter(Mandatory)][ValidateSet('gpl','lgpl',IgnoreCase=$true)][string] $Variant
+        [Parameter(Mandatory)][AllowEmptyString()][string] $ConfigText
     )
 
-    $variantKey = $Variant.ToLowerInvariant()
     $flagItems = @(Get-FFmpegConfigFlags -ConfigText $ConfigText)
     $flags = [System.Collections.Generic.HashSet[string]]::new(
         [string[]]$flagItems, [System.StringComparer]::OrdinalIgnoreCase)
     $violations = [System.Collections.Generic.List[string]]::new()
 
-    $hasX264 = $flags.Contains('libx264_encoder')
-    $hasX265 = $flags.Contains('libx265_encoder')
-    if ($variantKey -eq 'gpl') {
-        if (-not $hasX264) { $violations.Add("Fehlender H.264-Encoder 'libx264' in config.h (GPL, R6.1).") }
-        if (-not $hasX265) { $violations.Add("Fehlender H.265-Encoder 'libx265' in config.h (GPL, R6.2).") }
-    } else {
-        if ($hasX264) { $violations.Add("Unerwarteter GPL-Encoder 'libx264' in der LGPL-Variante (R6.5).") }
-        if ($hasX265) { $violations.Add("Unerwarteter GPL-Encoder 'libx265' in der LGPL-Variante (R6.5).") }
+    # --- GPL-Encoder duerfen NICHT vorhanden sein ---------------------------
+    if ($flags.Contains('libx264_encoder')) {
+        $violations.Add("Unerwarteter GPL-Encoder 'libx264' im LGPL-Build.")
+    }
+    if ($flags.Contains('libx265_encoder')) {
+        $violations.Add("Unerwarteter GPL-Encoder 'libx265' im LGPL-Build.")
     }
 
-    $amf   = @($flags | Where-Object { $_ -match '(?i)_amf_encoder$' })
-    if ($amf.Count -eq 0) { $violations.Add("Fehlende AMF-Hardware-Encoder in config.h (erwartet z. B. 'h264_amf', R5.1/R5.3).") }
-    $nvenc = @($flags | Where-Object { $_ -match '(?i)_nvenc_encoder$' })
-    if ($nvenc.Count -eq 0) { $violations.Add("Fehlende NVENC-Hardware-Encoder in config.h (erwartet z. B. 'h264_nvenc', R5.2).") }
+    # --- Hardware-Encoder MUESSEN vorhanden sein ----------------------------
+    $amf = @($flagItems | Where-Object { $_ -match '(?i)_amf_encoder$' })
+    if ($amf.Count -eq 0) {
+        $violations.Add("Fehlende AMF-Hardware-Encoder in config.h (erwartet z. B. 'h264_amf').")
+    }
+    $nvenc = @($flagItems | Where-Object { $_ -match '(?i)_nvenc_encoder$' })
+    if ($nvenc.Count -eq 0) {
+        $violations.Add("Fehlende NVENC-Hardware-Encoder in config.h (erwartet z. B. 'h264_nvenc').")
+    }
     $hasNvdec = $flags.Contains('cuda') -or $flags.Contains('nvdec') -or $flags.Contains('cuvid')
-    if (-not $hasNvdec) { $violations.Add("Fehlende NVDEC/CUDA-Hardware-Beschleunigung in config.h (erwartet CONFIG_CUDA/CONFIG_NVDEC, R5.4).") }
+    if (-not $hasNvdec) {
+        $violations.Add("Fehlende NVDEC/CUDA-Hardware-Beschleunigung in config.h (erwartet CONFIG_CUDA/CONFIG_NVDEC).")
+    }
 
     $success = ($violations.Count -eq 0)
     $message = if ($success) {
-        "Statische Faehigkeitspruefung (config.h) fuer Variante '$variantKey' bestanden."
+        "Statische Faehigkeitspruefung (config.h) bestanden: LGPL-Build ohne GPL-Encoder, mit AMF + NVENC/NVDEC."
     } else {
-        "Statische Faehigkeitspruefung (config.h) fuer Variante '$variantKey' fehlgeschlagen: " + ($violations -join ' ')
+        "Statische Faehigkeitspruefung (config.h) fehlgeschlagen: " + ($violations -join ' ')
     }
     return [pscustomobject]@{
         Success    = $success
-        Variant    = $variantKey
         Violations = [string[]]$violations.ToArray()
         Message    = $message
     }
-}
-
-function Invoke-FFmpegCapability {
-    <#
-    .SYNOPSIS
-        Ruft `ffmpeg <switch>` auf und liefert die erfasste Standardausgabe
-        (nur auf dem CI-Runner; nicht Teil der reinen Logik).
-    .DESCRIPTION
-        `ffmpeg` schreibt die Fähigkeitslisten nach stdout und Banner-/Log-
-        Informationen nach stderr. Wir erfassen beide Ströme und geben den
-        vereinten Text zurück, damit die Parser-Logik robust bleibt. Ein von
-        Null verschiedener Exit-Code bricht fail-fast ab.
-    #>
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)] [string] $FFmpegPath,
-        [Parameter(Mandatory)] [string] $Switch
-    )
-
-    $output = & $FFmpegPath '-hide_banner' $Switch 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Aufruf von '$FFmpegPath $Switch' schlug fehl (Exit $LASTEXITCODE)."
-    }
-    return ($output | Out-String)
 }
 
 # ---------------------------------------------------------------------------
@@ -440,14 +181,14 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
     $configText = ($configFiles | ForEach-Object { [System.IO.File]::ReadAllText($_) }) -join "`n"
     Write-Host ("Statische Pruefung aus: " + ($configFiles -join ', '))
-    $result = Test-FFmpegConfigCapabilities -ConfigText $configText -Variant $Variant
+    $result = Test-FFmpegConfigCapabilities -ConfigText $configText
 
     Write-Host $result.Message
 
     if (-not $result.Success) {
         # Diagnose: die tatsaechlich gefundenen codec-relevanten Schalter zeigen.
         $found = @(Get-FFmpegConfigFlags -ConfigText $configText |
-            Where-Object { $_ -match '(?i)(libx26[45]|_amf|_nvenc|nvdec|cuda|cuvid)' } | Sort-Object)
+            Where-Object { $_ -match '(?i)(libx26[45]|_amf|_nvenc|nvdec|cuda|cuvid|ffnvcodec)' } | Sort-Object)
         Write-Host ("Gefundene relevante CONFIG_-Schalter (" + $found.Count + "): " + ($found -join ', '))
         # Fail-fast: klare Meldung mit den benannten Abweichungen.
         throw $result.Message

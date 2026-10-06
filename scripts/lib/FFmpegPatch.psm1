@@ -4,7 +4,8 @@
 
 .DESCRIPTION
     FFmpeg 8.1.3 (und release/8.1) fehlen zwei Upstream-Fixes, die fuer einen
-    MSVC-Build nach ARM64/ARM64EC noetig sind:
+    MSVC-Build der Shared Libraries nach ARM64/ARM64EC mit NVENC/NVDEC noetig
+    sind:
 
       1. Commit 93f653f95c "configure: enable ffnvcodec, nvenc, nvdec for
          aarch64 Windows". configure deaktiviert ffnvcodec/cuvid/nvdec/nvenc
@@ -31,7 +32,7 @@
     Fundstelle weder auf die alte noch auf die neue Form, wird abgebrochen --
     dann hat sich der Quellbaum geaendert und der Backport muss geprueft werden.
 
-    Requirements: 5.2, 5.4 (NVENC/NVDEC), 3.1 (Shared Libraries)
+    Bezug: Shared Libraries (DLL + Import-.lib), NVENC/NVDEC.
 #>
 
 Set-StrictMode -Version Latest

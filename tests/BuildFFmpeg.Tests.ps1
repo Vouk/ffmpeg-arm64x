@@ -4,22 +4,57 @@
     Deckt vor allem ab, dass die MSVC-Dependency-Generierung abgeschaltet
     bleibt: ffbuild/common.mak ruft je Objekt $(call CCDEP,CC) auf, dessen
     awk-Programm bei FFmpeg <= 8.1.3 kaputt escaped ankommt und make abbricht.
+    Zudem: LGPL-only, Shared, keine GPL-Encoder, aber MIT AMF + NVENC/NVDEC.
 #>
 
 BeforeAll {
     $script:BuildFFmpeg = Join-Path (Split-Path -Parent $PSScriptRoot) "scripts/build-ffmpeg.ps1"
 
     function New-Plan {
-        param([string] $Variant = "gpl", [string] $Arch = "arm64", [switch] $WithHwHeaders)
+        param([string] $Arch = "arm64", [switch] $WithHwHeaders)
         $root = Join-Path $TestDrive ([guid]::NewGuid().ToString("N").Substring(0, 8))
-        $deps = Join-Path $root "deps"
-        New-Item -ItemType Directory -Force -Path $deps | Out-Null
+        $hw = Join-Path $root "hwheaders"
         if ($WithHwHeaders) {
-            New-Item -ItemType Directory -Force -Path (Join-Path $deps "hwheaders/include") | Out-Null
-            New-Item -ItemType Directory -Force -Path (Join-Path $deps "hwheaders/lib/pkgconfig") | Out-Null
+            New-Item -ItemType Directory -Force -Path (Join-Path $hw "include") | Out-Null
+            New-Item -ItemType Directory -Force -Path (Join-Path $hw "lib/pkgconfig") | Out-Null
         }
-        & $script:BuildFFmpeg -Variant $Variant -Arch $Arch -SourceDir (Join-Path $root "src") `
-            -OutputDir (Join-Path $root "out") -DepsDir $deps -DryRun 6>$null
+        & $script:BuildFFmpeg -Arch $Arch -SourceDir (Join-Path $root "src") `
+            -OutputDir (Join-Path $root "out") -HwHeadersDir $hw -DryRun 6>$null
+    }
+}
+
+Describe "build-ffmpeg: configure-Flags (LGPL, Shared, HW-Encoder)" {
+    It "baut shared und nicht statisch" {
+        $args = (New-Plan).ConfigureArgs -join " "
+        $args | Should -Match "--enable-shared"
+        $args | Should -Match "--disable-static"
+    }
+
+    It "aktiviert KEINE GPL-Komponenten (kein x264/x265)" {
+        $args = (New-Plan).ConfigureArgs -join " "
+        $args | Should -Not -Match "--enable-gpl"
+        $args | Should -Not -Match "libx264"
+        $args | Should -Not -Match "libx265"
+    }
+
+    It "aktiviert die Hardware-Encoder AMF + NVENC/NVDEC" {
+        $args = (New-Plan).ConfigureArgs -join " "
+        $args | Should -Match "--enable-amf"
+        $args | Should -Match "--enable-nvenc"
+        $args | Should -Match "--enable-nvdec"
+    }
+}
+
+Describe "build-ffmpeg: Hardware-Header" {
+    It "reicht include und pkgconfig der hwheaders weiter, wenn vorhanden" {
+        $plan = New-Plan -WithHwHeaders
+        ($plan.ConfigureArgs -join " ") | Should -Match "extra-cflags=-I\S*hwheaders/include"
+        $plan.BashScript | Should -Match "hwheaders/lib/pkgconfig"
+    }
+
+    It "laeuft ohne hwheaders-Verzeichnis durch" {
+        $plan = New-Plan
+        ($plan.ConfigureArgs -join " ") | Should -Not -Match "hwheaders"
     }
 }
 
@@ -51,18 +86,7 @@ Describe "build-ffmpeg: make-Aufrufe" {
     }
 }
 
-Describe "build-ffmpeg: Hardware-Header" {
-    It "reicht include und pkgconfig der hwheaders weiter, wenn vorhanden" {
-        $plan = New-Plan -WithHwHeaders
-        ($plan.ConfigureArgs -join " ") | Should -Match "extra-cflags=-I\S*hwheaders/include"
-        $plan.BashScript | Should -Match "hwheaders/lib/pkgconfig"
-    }
-
-    It "laeuft ohne hwheaders-Verzeichnis durch" {
-        $plan = New-Plan
-        ($plan.ConfigureArgs -join " ") | Should -Not -Match "hwheaders"
-    }
-
+Describe "build-ffmpeg: ARM64EC-Ansicht" {
     It "nutzt arch=arm64 und EC-Flags fuer die arm64ec-Ansicht" {
         $args = (New-Plan -Arch "arm64ec").ConfigureArgs -join " "
         $args | Should -Match "--arch=arm64(\s|$)"
@@ -77,9 +101,9 @@ Describe "build-ffmpeg: Hardware-Header" {
 
 Describe "build-ffmpeg: sauberer Rebuild je Arch" {
     It "fuehrt 'make distclean' VOR configure aus (geteilter Quellbaum)" {
-        # Der Quellbaum wird fuer alle vier Builds wiederverwendet; ohne
-        # distclean recompiliert make nicht und der arm64ec-Build erbt die
-        # ARM64-Objekte des vorherigen Laufs.
+        # Der Quellbaum wird fuer beide Builds wiederverwendet; ohne distclean
+        # recompiliert make nicht und der arm64ec-Build erbt die ARM64-Objekte
+        # des vorherigen Laufs.
         $bash = @((New-Plan -Arch "arm64ec").BashScript -split "`n")
         $clean = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "make distclean" })
         $cfg   = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "^\./configure " })

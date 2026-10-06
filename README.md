@@ -1,6 +1,6 @@
 # ARM64X-FFmpeg-Build
 
-Standalone-Repository, das **FFmpeg 8** als **ARM64X-Hybrid-Binärdateien** (Windows on ARM: eine PE-Datei mit ARM64- *und* ARM64EC-Ansicht) baut, als **dynamische Bibliotheken** (Shared/DLL), in **zwei Lizenz-Varianten** (GPL und LGPL), und daraus **zwei MSI-Installer** erzeugt.
+Standalone-Repository, das **FFmpeg 8** (Standard: **8.1.3**) als **ARM64X-Hybrid-Binärdateien** (Windows on ARM: eine PE-Datei mit ARM64- *und* ARM64EC-Ansicht) baut, ausschließlich als **dynamische Bibliotheken** (Shared/DLL), in der **LGPL-Variante mit den Hardware-Encodern AMF und NVENC/NVDEC**, und daraus **einen MSI-Installer** erzeugt.
 
 Der Build läuft vollautomatisch, aber **ausschließlich manuell ausgelöst** (`workflow_dispatch`) auf GitHub Actions.
 
@@ -8,11 +8,10 @@ Der Build läuft vollautomatisch, aber **ausschließlich manuell ausgelöst** (`
 
 ## Was gebaut wird
 
-- **FFmpeg 8.x** als Shared Libraries (`avcodec`, `avformat`, `avutil`, `avfilter`, `avdevice`, `swscale`, `swresample`) — je DLL eine namensgleiche `.lib`-Import-Bibliothek.
-- **GPL-Variante**: mit `--enable-gpl`, inklusive libx264, libx265.
-- **LGPL-Variante**: ohne GPL-Komponenten (kein libx264/libx265).
-- **Beide Varianten**: AMF- und NVIDIA-Header (Hardware-Encoding/Decoding) eingebunden.
-- **Zwei MSI-Installer** (WiX): Lizenzanzeige, anpassbarer Installationspfad (Standard `C:\Program Files\FFmpeg 8`), Eintrag des `bin`-Pfads an den Anfang der System-`PATH`-Variable.
+- **FFmpeg 8.1.3** als Shared Libraries (`avcodec`, `avformat`, `avutil`, `avfilter`, `avdevice`, `swscale`, `swresample`) — je DLL eine namensgleiche `.lib`-Import-Bibliothek. Es werden keine statischen Bibliotheken erzeugt.
+- **Nur LGPL**: ohne `--enable-gpl`, ohne libx264/libx265.
+- **Hardware-Encoder**: AMD **AMF** (`--enable-amf`) und NVIDIA **NVENC/NVDEC** (`--enable-nvenc --enable-nvdec`). Das sind header-only SDK-Integrationen (AMF-Header + nv-codec-headers), die zur Laufzeit die Treiber-DLLs laden und LGPL-verträglich sind. GPL-Codecs (x264/x265) bleiben ausgeschlossen.
+- **Ein MSI-Installer** (WiX): Lizenzanzeige, anpassbarer Installationspfad (Standard `C:\Program Files\FFmpeg 8`), Eintrag des `bin`-Pfads an den Anfang der System-`PATH`-Variable.
 
 ## Verzeichnisstruktur
 
@@ -22,8 +21,8 @@ scripts/              Build-, Merge- und Verifikations-Skripte (PowerShell)
 scripts/lib/          Testbare Reinlogik-Module (PowerShell)
 installer/            WiX-Installer-Definitionen
 installer/PathAction/ C++-Custom-Action für System-PATH-Manipulation
-installer/license/    Lizenz-RTFs, die die Installer-UI anzeigt
-licenses/             Volltext-Lizenzdateien (GPL / LGPL)
+installer/license/    Lizenz-RTF, die die Installer-UI anzeigt
+licenses/             Volltext-Lizenzdatei (LGPL)
 tests/                Pester-Tests (Unit + Property-Based mit FsCheck)
 ```
 
@@ -50,9 +49,8 @@ ctest --test-dir build_pathaction --output-on-failure
 
 Property-Tests laufen mit mindestens 100 Iterationen und referenzieren ihre Design-Property über das Tag-Format `Feature: arm64x-ffmpeg-build, Property N`.
 
-## Lizenzen
+## Lizenz
 
-- GPL-Variante: siehe [`licenses/LICENSE.GPL.txt`](licenses/LICENSE.GPL.txt).
 - LGPL-Variante: siehe [`licenses/LICENSE.LGPL.txt`](licenses/LICENSE.LGPL.txt).
 
-Die während der Installation angezeigten Lizenztexte liegen als RTF unter `installer/license/`.
+Der während der Installation angezeigte Lizenztext liegt als RTF unter `installer/license/lgpl-3.0.rtf`.

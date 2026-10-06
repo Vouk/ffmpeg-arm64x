@@ -1,20 +1,23 @@
 <#
 .SYNOPSIS
-    Baut FFmpeg für genau eine (Variante, Architektur)-Kombination als Shared
-    Libraries (DLL + .lib) samt ffmpeg.exe/ffprobe.exe.
+    Baut FFmpeg (LGPL) für genau eine Architektur als Shared Libraries
+    (DLL + .lib) samt ffmpeg.exe/ffprobe.exe.
 
 .DESCRIPTION
     Ein `configure`/`make`-Durchlauf für FFmpeg unter MSYS2 mit der
     MSVC-Toolchain (`--toolchain=msvc`). Das Skript kapselt genau EINEN
-    Build-Durchlauf; die vier Durchläufe der Build-Matrix
-    (GPL/LGPL × arm64/arm64ec) werden vom Workflow durch vier separate Aufrufe
-    dieses Skripts realisiert. Der anschließende ARM64X-Merge über beide
-    Architektur-Ansichten ist NICHT Teil dieses Skripts (siehe
-    scripts/merge-arm64x.ps1).
+    Build-Durchlauf; die zwei Durchläufe der Build-Matrix (arm64/arm64ec)
+    werden vom Workflow durch zwei separate Aufrufe dieses Skripts realisiert.
+    Der anschließende ARM64X-Merge über beide Architektur-Ansichten ist NICHT
+    Teil dieses Skripts (siehe scripts/merge-arm64x.ps1).
+
+    Gebaut wird ausschliesslich die LGPL-Variante, als Shared Libraries, OHNE
+    GPL-Komponenten (kein x264/x265), aber MIT den Hardware-Encodern AMF und
+    NVENC/NVDEC (header-only SDK-Integrationen, LGPL-vertraeglich).
 
     Ablauf je Durchlauf:
       1. Reinlogik-Modul scripts/lib/BuildConfig.psm1 importieren und die
-         `configure`-Flags über Get-ConfigureFlags -Variant -Arch beziehen.
+         `configure`-Flags über Get-ConfigureFlags -Arch beziehen.
       2. Vollständigen `configure`-Befehl zusammensetzen: die Flags plus
          Quell-/Prefix-Pfade (`--prefix`, optional `--bindir`/`--libdir`).
       3. FFmpegs `configure` und danach `make`/`make install` unter MSYS2-bash
@@ -23,7 +26,7 @@
          bash-Session durchgereicht, sodass `cl.exe`/`link.exe`/`lib.exe` dort
          auffindbar sind.
       4. Ergebnis: Shared Libraries (DLL + gleichnamige .lib) sowie
-         ffmpeg.exe/ffprobe.exe im arch-/varianten-spezifischen Ausgabe-Prefix.
+         ffmpeg.exe/ffprobe.exe im arch-spezifischen Ausgabe-Prefix.
 
     Die eigentliche Build-Toolchain (MSYS2 + MSVC-Cross-Tools) existiert nur auf
     dem CI-Runner. Damit die Argument-Zusammensetzungs-Logik lokal ohne diese
@@ -34,20 +37,16 @@
     Fail-fast: $ErrorActionPreference = 'Stop'; jeder von Null verschiedene
     Exit-Code eines Build-Schritts bricht das Skript ab.
 
-.PARAMETER Variant
-    Lizenz-Variante: 'gpl' oder 'lgpl' (case-insensitiv). Steuert die
-    GPL-Komponenten über Get-ConfigureFlags.
-
 .PARAMETER Arch
-    Ziel-Architektur: 'arm64' oder 'arm64ec' (case-insensitiv). Bestimmt das
-    `--arch=<...>`-Flag und den Namen des Ausgabe-Unterverzeichnisses.
+    Ziel-Architektur: 'arm64' oder 'arm64ec' (case-insensitiv). Bestimmt die
+    ARM64EC-Flags und den Namen des Ausgabe-Unterverzeichnisses.
 
 .PARAMETER SourceDir
     Pfad zum ausgepackten FFmpeg-Quellbaum (enthält das `configure`-Skript).
 
 .PARAMETER OutputDir
     Basis-Ausgabeverzeichnis. Der tatsächliche Installations-Prefix ist
-    "<OutputDir>/<variant>/<arch>", sodass die vier Durchläufe der Build-Matrix
+    "<OutputDir>/<arch>", sodass die zwei Durchläufe der Build-Matrix
     kollisionsfrei nebeneinander liegen.
 
 .PARAMETER Msys2Bash
@@ -66,24 +65,18 @@
     Argument-Zusammensetzung.
 
 .EXAMPLE
-    ./build-ffmpeg.ps1 -Variant gpl -Arch arm64 -SourceDir C:\src\ffmpeg -OutputDir C:\out
+    ./build-ffmpeg.ps1 -Arch arm64 -SourceDir C:\src\ffmpeg -OutputDir C:\out
 
 .EXAMPLE
-    ./build-ffmpeg.ps1 -Variant lgpl -Arch arm64ec -SourceDir C:\src\ffmpeg -OutputDir C:\out -DryRun
+    ./build-ffmpeg.ps1 -Arch arm64ec -SourceDir C:\src\ffmpeg -OutputDir C:\out -DryRun
 
 .NOTES
-    Requirements: 2.3, 3.1, 3.2, 4.1, 4.2, 4.3, 5.1, 5.2, 5.3, 5.4,
-                  6.1, 6.2, 6.3, 6.5
     Design: Architecture -> Runner-/Toolchain-Strategie (MSYS2 mit MSVC via
             --toolchain=msvc), Components -> C2 Build-Skripte
             (scripts/build-ffmpeg.ps1).
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
-    [ValidateSet('gpl', 'lgpl', IgnoreCase = $true)]
-    [string] $Variant,
-
     [Parameter(Mandatory)]
     [ValidateSet('arm64', 'arm64ec', IgnoreCase = $true)]
     [string] $Arch,
@@ -94,11 +87,13 @@ param(
     [Parameter(Mandatory)]
     [string] $OutputDir,
 
-    # Wurzel der gebauten externen Libs (x264/x265) je Variante,
-    # z. B. <OUT>\deps\gpl mit <codec>\<arch>\{include,lib,lib/pkgconfig}.
-    # Fuer LGPL leer (keine externen Codecs).
+    # Prefix mit den abgelegten Hardware-Headern (AMF + nv-codec), so wie
+    # scripts/lib/HwHeaders.psm1 ihn erzeugt: <HwHeadersDir>\include\AMF,
+    # <HwHeadersDir>\include\ffnvcodec und
+    # <HwHeadersDir>\lib\pkgconfig\ffnvcodec.pc. Fehlt der Pfad, bricht
+    # configure fuer --enable-amf/--enable-nvenc/--enable-nvdec ab.
     [Parameter()]
-    [string] $DepsDir,
+    [string] $HwHeadersDir,
 
     [Parameter()]
     [string] $Msys2Bash = 'C:\msys64\usr\bin\bash.exe',
@@ -114,9 +109,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Reinlogik-Modul für die configure-Flags importieren (COMPLETE, siehe Task 2.3).
+# Reinlogik-Modul für die configure-Flags importieren.
 Import-Module (Join-Path $PSScriptRoot 'lib/BuildConfig.psm1') -Force
-# Backport fuer configure (NVIDIA auf aarch64 Windows, FFmpeg-Commit 93f653f95c).
+# Backports fuer den FFmpeg-Quellbaum (makedef-Response-Datei fuer Shared Libs).
 Import-Module (Join-Path $PSScriptRoot 'lib/FFmpegPatch.psm1') -Force
 
 function ConvertTo-Msys2Path {
@@ -159,17 +154,17 @@ function ConvertTo-BashSingleQuoted {
 function Get-FFmpegBuildPlan {
     <#
     .SYNOPSIS
-        Setzt den vollständigen configure/make-Ablauf für eine
-        (Variante, Architektur)-Kombination zusammen (reine Logik).
+        Setzt den vollständigen configure/make-Ablauf für eine Architektur
+        zusammen (reine Logik).
 
     .DESCRIPTION
         Kapselt die gesamte Argument-Zusammensetzung ohne Seiteneffekte, damit
         sie lokal (auch im -DryRun) überprüfbar ist. Nutzt Get-ConfigureFlags
-        für die Varianten-/Architektur-Flags und ergänzt Quell-/Prefix-Pfade.
+        für die Architektur-Flags und ergänzt Quell-/Prefix-Pfade.
 
     .OUTPUTS
         [pscustomobject] mit:
-          Variant, Arch, Prefix (Windows), PrefixPosix,
+          Arch, Prefix (Windows), PrefixPosix,
           SourceDirPosix, ConfigureFlags (string[]),
           ConfigureArgs (string[]), BashScript (string),
           Msys2Bash, Env (hashtable der zu setzenden Umgebungsvariablen).
@@ -177,24 +172,22 @@ function Get-FFmpegBuildPlan {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
-        [Parameter(Mandatory)][string] $Variant,
         [Parameter(Mandatory)][string] $Arch,
         [Parameter(Mandatory)][string] $SourceDir,
         [Parameter(Mandatory)][string] $OutputDir,
         [Parameter(Mandatory)][string] $Msys2Bash,
         [Parameter(Mandatory)][int] $Jobs,
-        [string] $DepsDir
+        [string] $HwHeadersDir
     )
 
-    $variantKey = $Variant.ToLowerInvariant()
     $archKey = $Arch.ToLowerInvariant()
 
-    # Varianten-/Architektur-Flags aus dem Reinlogik-Modul (COMPLETE).
-    $configureFlags = Get-ConfigureFlags -Variant $variantKey -Arch $archKey
+    # Architektur-Flags aus dem Reinlogik-Modul (LGPL, Shared, HW-Encoder).
+    $configureFlags = Get-ConfigureFlags -Arch $archKey
 
-    # Arch-/varianten-spezifischer Installations-Prefix, kollisionsfrei je
-    # Durchlauf der Build-Matrix.
-    $prefix = Join-Path (Join-Path $OutputDir $variantKey) $archKey
+    # Arch-spezifischer Installations-Prefix, kollisionsfrei je Durchlauf der
+    # Build-Matrix.
+    $prefix = Join-Path $OutputDir $archKey
     $prefixPosix = ConvertTo-Msys2Path -Path $prefix
     $sourcePosix = ConvertTo-Msys2Path -Path $SourceDir
 
@@ -207,32 +200,17 @@ function Get-FFmpegBuildPlan {
     $configureArgs.Add("--libdir=$prefixPosix/lib")
     $configureArgs.Add("--incdir=$prefixPosix/include")
 
-    # Externe Codecs (nur GPL): FFmpegs configure findet x264/x265
-    # ueber pkg-config. Je Codec include/lib hineinreichen (MSVC-Stil)
-    # und die pkgconfig-Verzeichnisse fuer PKG_CONFIG_PATH sammeln.
+    # Hardware-Header (AMF + nv-codec, von scripts/install-hwheaders.ps1
+    # abgelegt): AMF ueber den include-Pfad (FFmpeg inkludiert <AMF/core/
+    # Version.h>), ffnvcodec ueber seine .pc-Datei (configure prueft ffnvcodec
+    # nur per pkg-config). Beide Pfade in configure und PKG_CONFIG_PATH reichen.
     $pkgConfigDirs = [System.Collections.Generic.List[string]]::new()
-    if ($DepsDir -and (Test-Path -LiteralPath $DepsDir)) {
-        foreach ($codec in @('x264', 'x265')) {
-            $codecRoot = Join-Path (Join-Path $DepsDir $codec) $archKey
-            if (-not (Test-Path -LiteralPath $codecRoot)) { continue }
-            $incPosix = ConvertTo-Msys2Path -Path (Join-Path $codecRoot 'include')
-            $libWin   = Join-Path $codecRoot 'lib'
-            $libPosix = ConvertTo-Msys2Path -Path $libWin
-            $configureArgs.Add("--extra-cflags=-I$incPosix")
-            $configureArgs.Add("--extra-ldflags=-LIBPATH:$libPosix")
-            $pcDir = Join-Path $libWin 'pkgconfig'
-            if (Test-Path -LiteralPath $pcDir) { $pkgConfigDirs.Add((ConvertTo-Msys2Path -Path $pcDir)) }
-        }
-
-        # Hardware-Header (beide Varianten, von build-deps.ps1 abgelegt):
-        # AMF ueber den include-Pfad (<AMF/core/Version.h>), ffnvcodec ueber
-        # seine .pc-Datei (configure prueft ffnvcodec nur per pkg-config).
-        $hwPrefix = Join-Path $DepsDir 'hwheaders'
-        if (Test-Path -LiteralPath $hwPrefix) {
-            $hwIncPosix = ConvertTo-Msys2Path -Path (Join-Path $hwPrefix 'include')
-            $configureArgs.Add("--extra-cflags=-I$hwIncPosix")
-            $hwPcDir = Join-Path (Join-Path $hwPrefix 'lib') 'pkgconfig'
-            if (Test-Path -LiteralPath $hwPcDir) { $pkgConfigDirs.Add((ConvertTo-Msys2Path -Path $hwPcDir)) }
+    if ($HwHeadersDir -and (Test-Path -LiteralPath $HwHeadersDir)) {
+        $hwIncPosix = ConvertTo-Msys2Path -Path (Join-Path $HwHeadersDir 'include')
+        $configureArgs.Add("--extra-cflags=-I$hwIncPosix")
+        $hwPcDir = Join-Path (Join-Path $HwHeadersDir 'lib') 'pkgconfig'
+        if (Test-Path -LiteralPath $hwPcDir) {
+            $pkgConfigDirs.Add((ConvertTo-Msys2Path -Path $hwPcDir))
         }
     }
 
@@ -243,12 +221,16 @@ function Get-FFmpegBuildPlan {
     $quotedConfigureArgs = ($configureArgsArr | ForEach-Object { ConvertTo-BashSingleQuoted $_ }) -join ' '
     $quotedSource = ConvertTo-BashSingleQuoted $sourcePosix
 
+    # PKG_CONFIG_PATH fuer ffnvcodec.pc setzen (sonst findet configure
+    # ffnvcodec nicht und --enable-nvenc/--enable-nvdec brechen ab). Ohne
+    # HW-Header bleibt die Zeile ein No-op (":").
     $pkgPathLine = if ($pkgConfigDirs.Count -gt 0) {
         "export PKG_CONFIG_PATH='" + ($pkgConfigDirs -join ':') + "'"
     } else { ':' }
-    # Diagnose: zeigt im CI-Log, ob pkg-config x264/x265 findet und warum.
+    # Diagnose: zeigt im CI-Log, ob pkg-config ffnvcodec findet und warum.
     # Laeuft nicht-fatal (|| true), damit set -e hier nicht abbricht.
-    $pkgDiag = 'echo PKG_CONFIG_PATH=$PKG_CONFIG_PATH; which pkg-config pkgconf 2>/dev/null || true; for L in x264 x265 ffnvcodec; do echo -- $L --; pkg-config --exists $L && echo found || echo missing; pkg-config --cflags --libs $L 2>&1 || true; done'
+    $pkgDiag = 'echo PKG_CONFIG_PATH=$PKG_CONFIG_PATH; which pkg-config pkgconf 2>/dev/null || true; for L in ffnvcodec; do echo -- $L --; pkg-config --exists $L && echo found || echo missing; pkg-config --cflags --libs $L 2>&1 || true; done'
+
     # MSVC-Dependency-Generierung abschalten (CCDEP/CXXDEP leer).
     # ffbuild/common.mak ruft je Objekt $(call CCDEP,CC) als eigenen Lauf auf;
     # dessen awk-Programm kommt bei FFmpeg <= 8.1.3 mit kaputtem
@@ -263,8 +245,8 @@ function Get-FFmpegBuildPlan {
     # Diagnose: zeigt die CCDEP-Zeile aus config.mak im CI-Log.
     $cfgMakDiag = 'grep -n "^CCDEP" ffbuild/config.mak || true'
 
-    # WICHTIG - sauberer Rebuild je (Variante, Arch): Der FFmpeg-Quellbaum wird
-    # fuer ALLE vier Builds (gpl/lgpl x arm64/arm64ec) WIEDERVERWENDET. make
+    # WICHTIG - sauberer Rebuild je Arch: Der FFmpeg-Quellbaum wird
+    # fuer BEIDE Builds (arm64 + arm64ec) WIEDERVERWENDET. make
     # entscheidet anhand der Zeitstempel, ob eine .o neu gebaut wird. Nach dem
     # arm64-Build existieren alle Objekte bereits und sind neuer als die
     # Quellen -- der nachfolgende arm64ec-Build kompiliert daher NICHT neu,
@@ -272,8 +254,8 @@ function Get-FFmpegBuildPlan {
     # (in CI 37290208404 / 37294268893 / 37298727949 beobachtet): die
     # arm64ec-DLLs blieben reines ARM64, obwohl -arm64EC in config.mak stand.
     #
-    # Loesung: vor configure IMMER distclean, damit jede (Variante,Arch)-
-    # Kombination mit frischen Objekten und den fuer sie geltenden Flags baut.
+    # Loesung: vor configure IMMER distclean, damit jede Arch-Ansicht mit
+    # frischen Objekten und den fuer sie geltenden Flags baut.
     # Beim allerersten Lauf gibt es noch keine config.mak -> distclean ist dann
     # ein No-op; daher "|| true" (set -e nicht ausloesen).
     $distclean = 'make distclean 2>/dev/null || true'
@@ -322,7 +304,6 @@ function Get-FFmpegBuildPlan {
     $envVars = @{ 'MSYS2_PATH_TYPE' = 'inherit' }
 
     return [pscustomobject]@{
-        Variant        = $variantKey
         Arch           = $archKey
         Prefix         = $prefix
         PrefixPosix    = $prefixPosix
@@ -340,20 +321,19 @@ function Get-FFmpegBuildPlan {
 # --- Ablauf -----------------------------------------------------------------
 
 $plan = Get-FFmpegBuildPlan `
-    -Variant $Variant `
     -Arch $Arch `
     -SourceDir $SourceDir `
     -OutputDir $OutputDir `
     -Msys2Bash $Msys2Bash `
     -Jobs $Jobs `
-    -DepsDir $DepsDir
+    -HwHeadersDir $HwHeadersDir
 
-Write-Verbose "FFmpeg-Build-Plan: Variant=$($plan.Variant) Arch=$($plan.Arch) Prefix=$($plan.Prefix)"
+Write-Verbose "FFmpeg-Build-Plan: Arch=$($plan.Arch) Prefix=$($plan.Prefix)"
 
 if ($DryRun) {
     # Lokale Verifikation: Nur den zusammengesetzten Aufruf ausgeben, nichts
     # ausführen. Gibt das Plan-Objekt zurück, damit Tests es inspizieren können.
-    Write-Host "== DRY RUN: FFmpeg $($plan.Variant)/$($plan.Arch) =="
+    Write-Host "== DRY RUN: FFmpeg (LGPL)/$($plan.Arch) =="
     Write-Host "MSYS2 bash : $($plan.Msys2Bash)"
     Write-Host "Env        : $(( $plan.Env.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; ')"
     Write-Host "Source     : $($plan.SourceDirPosix)"
@@ -376,7 +356,8 @@ if (-not (Test-Path -LiteralPath $Msys2Bash)) {
 }
 
 # Backports auf den FFmpeg-Quellbaum (siehe scripts/lib/FFmpegPatch.psm1):
-#   * NVENC/NVDEC auf aarch64 Windows freischalten (93f653f95c)
+#   * NVENC/NVDEC auf aarch64 Windows freischalten (93f653f95c) -- sonst
+#     bricht configure mit --enable-nvdec/--enable-nvenc ab.
 #   * makedef die .objs-Response-Datei reichen (8512161c81) -- ohne das
 #     reisst libavcodec mit ~1000 Objekten die Kommandozeilen-Grenze.
 # Idempotent: enthaelt die Quelle einen Fix bereits, bleibt sie unveraendert.
@@ -393,18 +374,18 @@ foreach ($kv in $plan.Env.GetEnumerator()) {
     Set-Item -Path ("Env:" + $kv.Key) -Value $kv.Value
 }
 
-Write-Host "Baue FFmpeg ($($plan.Variant)/$($plan.Arch)) unter MSYS2 ..."
+Write-Host "Baue FFmpeg (LGPL)/$($plan.Arch) unter MSYS2 ..."
 & $plan.Msys2Bash '-lc' $plan.BashScript
 if ($LASTEXITCODE -ne 0) {
     # Bei configure-/Build-Fehler FFmpegs config.log ausgeben -- dort steht
-    # die konkrete Ursache (z. B. warum pkg-config x264 nicht akzeptiert).
+    # die konkrete Ursache (z. B. warum pkg-config ffnvcodec nicht akzeptiert).
     $ffCfgLog = Join-Path $SourceDir 'ffbuild/config.log'
     if (Test-Path -LiteralPath $ffCfgLog) {
         Write-Host '----- FFmpeg ffbuild/config.log (letzte 120 Zeilen) -----'
         Get-Content -LiteralPath $ffCfgLog -Tail 120 | ForEach-Object { Write-Host $_ }
         Write-Host '---------------------------------------------------------'
     }
-    throw "FFmpeg-Build fehlgeschlagen ($($plan.Variant)/$($plan.Arch)): bash-Exit-Code $LASTEXITCODE."
+    throw "FFmpeg-Build fehlgeschlagen (LGPL/$($plan.Arch)): bash-Exit-Code $LASTEXITCODE."
 }
 
 # Sanity-Check: ffmpeg.exe/ffprobe.exe und mindestens eine DLL erzeugt?
@@ -450,12 +431,12 @@ foreach ($base in $dllBases) {
 Write-Host "ARM64X-Vorbereitung: $defCount .def- und $libCount .lib-Datei(en) nach $libOut kopiert."
 
 # Statische Faehigkeitspruefung: FFmpeg verteilt die CONFIG_-Schalter auf ZWEI
-# generierte Header: ffbuild/config.h (externe Libs/HW: CONFIG_LIBX264,
-# CONFIG_CUDA, CONFIG_NVDEC ...) und ffbuild/config_components.h (die
+# generierte Header: ffbuild/config.h (HW-Libs: CONFIG_AMF, CONFIG_CUDA,
+# CONFIG_NVDEC, CONFIG_FFNVCODEC ...) und ffbuild/config_components.h (die
 # Komponenten-Schalter CONFIG_*_ENCODER/_DECODER/_HWACCEL ...). Da ARM64-
 # ffmpeg.exe auf dem x64-Runner NICHT ausfuehrbar ist, pruefen wir die
-# Faehigkeiten statisch aus BEIDEN Headern. Der Quellbaum wird fuer alle vier
-# Builds wiederverwendet, daher beide Header je (Variante,Arch)-Prefix sichern,
+# Faehigkeiten statisch aus BEIDEN Headern. Der Quellbaum wird fuer beide
+# Builds wiederverwendet, daher beide Header je Arch-Prefix sichern,
 # bevor der naechste Build sie ueberschreibt.
 $cfgCopied = 0
 foreach ($cfgName in @('config.h', 'config_components.h')) {

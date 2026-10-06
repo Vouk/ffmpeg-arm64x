@@ -1,211 +1,19 @@
 <#
-    Unit-/Beispieltests für die reine Parsing- und Assertion-Logik von
-    scripts/verify-capabilities.ps1 (Task 9.4).
+    Unit-/Beispieltests für die reine, statische config.h-Pruefung von
+    scripts/verify-capabilities.ps1.
 
-    Die echte ffmpeg.exe existiert nur auf dem CI-Runner. Diese Tests speisen
-    daher REPRÄSENTATIVE, erfasste ffmpeg-Ausgaben (-encoders/-decoders/
-    -hwaccels) in die reine Funktion Test-FFmpegCapabilities und prüfen die
-    je Variante erwarteten Regeln (present/absent):
-
-      - GPL  : libx264/libx265 vorhanden, AMF+NVENC/NVDEC.
-      - LGPL : libx264/libx265 ABWESEND, AMF+NVENC/NVDEC.
-
-    Requirements: 6.1, 6.2, 6.5, 5.1, 5.2, 5.3, 5.4
+    Es wird die LGPL-Variante gebaut: OHNE GPL-Encoder (libx264/libx265), aber
+    MIT den Hardware-Encodern AMF (AMD) und NVENC/NVDEC (NVIDIA). Die echte
+    ffmpeg.exe existiert nur auf dem CI-Runner (und ist ARM64, also auf dem
+    x64-Runner nicht ausfuehrbar); deshalb pruefen wir statisch aus FFmpegs
+    config.h.
 #>
 
 BeforeAll {
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     # Reine Logik per Dot-Sourcing laden, ohne den Skript-Rumpf auszuführen
     # (der Rumpf prüft $MyInvocation.InvocationName -ne '.').
-    . (Join-Path $script:RepoRoot 'scripts/verify-capabilities.ps1') `
-        -FFmpegPath 'unused' -Variant 'gpl'
-
-    # --- Repräsentative erfasste ffmpeg-Ausgaben --------------------------
-
-    # -encoders: GPL-Variante (mit libx264/libx265 + AMF + NVENC).
-    $script:EncodersGpl = @'
-Encoders:
- V..... = Video
- A..... = Audio
- S..... = Subtitle
- .F.... = Frame-level multithreading
- ..S... = Slice-level multithreading
- ...X.. = Codec is experimental
- ....B. = Supports draw_horiz_band
- .....D = Supports direct rendering method 1
- ------
- V....D libx264              libx264 H.264 / AVC / MPEG-4 AVC (codec h264)
- V....D libx265              libx265 H.265 / HEVC (codec hevc)
- V....D h264_amf             AMD AMF H.264 Encoder (codec h264)
- V....D hevc_amf             AMD AMF HEVC encoder (codec hevc)
- V....D av1_amf              AMD AMF AV1 encoder (codec av1)
- V....D h264_nvenc           NVIDIA NVENC H.264 encoder (codec h264)
- V....D hevc_nvenc           NVIDIA NVENC hevc encoder (codec hevc)
- A..... aac                  AAC (Advanced Audio Coding)
-'@
-
-    # -encoders: LGPL-Variante (OHNE libx264/libx265, aber AMF + NVENC).
-    $script:EncodersLgpl = @'
-Encoders:
- V..... = Video
- A..... = Audio
- ------
- V....D h264_amf             AMD AMF H.264 Encoder (codec h264)
- V....D hevc_amf             AMD AMF HEVC encoder (codec hevc)
- V....D h264_nvenc           NVIDIA NVENC H.264 encoder (codec h264)
- V....D hevc_nvenc           NVIDIA NVENC hevc encoder (codec hevc)
- A..... aac                  AAC (Advanced Audio Coding)
-'@
-
-    # -decoders: enthält den dav1d-basierten AV1-Decoder (beide Varianten).
-    $script:DecodersWithDav1d = @'
-Decoders:
- V..... = Video
- A..... = Audio
- ------
- V....D libdav1d             dav1d AV1 decoder by VideoLAN (codec av1)
- V....D h264                 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10
- A..... aac                  AAC (Advanced Audio Coding)
-'@
-
-    # -decoders: OHNE dav1d/AV1 (negativer Fall).
-    $script:DecodersNoAv1 = @'
-Decoders:
- V..... = Video
- ------
- V....D h264                 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10
- A..... aac                  AAC (Advanced Audio Coding)
-'@
-
-    # -hwaccels: mit CUDA/NVDEC (beide Varianten).
-    $script:HwaccelsWithCuda = @'
-Hardware acceleration methods:
-d3d11va
-dxva2
-cuda
-'@
-
-    # -hwaccels: OHNE cuda/nvdec (negativer Fall).
-    $script:HwaccelsNoNvdec = @'
-Hardware acceleration methods:
-d3d11va
-dxva2
-'@
-}
-
-Describe 'Get-FFmpegListedNames (Parser)' {
-    It 'extrahiert Codec-Namen erst nach der ------ Trennlinie' {
-        $names = Get-FFmpegListedNames -Text $script:EncodersGpl -Kind 'list'
-        # Legende/Kopf ("Video", "Audio", Flag-Zeilen) darf nicht erscheinen.
-        $names | Should -Contain 'libx264'
-        $names | Should -Contain 'h264_amf'
-        $names | Should -Not -Contain 'Video'
-        $names | Should -Not -Contain '='
-    }
-
-    It 'parst hwaccels-Methoden ohne die Kopfzeile' {
-        $names = Get-FFmpegListedNames -Text $script:HwaccelsWithCuda -Kind 'hwaccels'
-        $names | Should -Contain 'cuda'
-        $names | Should -Contain 'd3d11va'
-        $names | Should -Not -Contain 'Hardware acceleration methods:'
-    }
-
-    It 'liefert eine leere Menge für leeren Text' {
-        (Get-FFmpegListedNames -Text '' -Kind 'list').Count | Should -Be 0
-    }
-}
-
-Describe 'Test-FFmpegCapabilities - GPL-Variante' {
-    It 'besteht bei vorhandenen libx264/libx265 + AMF + NVENC/NVDEC' {
-        $r = Test-FFmpegCapabilities `
-            -EncodersText $script:EncodersGpl `
-            -DecodersText $script:DecodersWithDav1d `
-            -HwaccelsText $script:HwaccelsWithCuda `
-            -Variant 'gpl'
-        $r.Success | Should -BeTrue -Because $r.Message
-        $r.Violations.Count | Should -Be 0
-    }
-
-    It 'schlägt fehl und benennt libx264, wenn der GPL-Encoder fehlt' {
-        $r = Test-FFmpegCapabilities `
-            -EncodersText $script:EncodersLgpl `
-            -DecodersText $script:DecodersWithDav1d `
-            -HwaccelsText $script:HwaccelsWithCuda `
-            -Variant 'gpl'
-        $r.Success | Should -BeFalse
-        ($r.Violations -join ' ') | Should -Match 'libx264'
-        ($r.Violations -join ' ') | Should -Match 'libx265'
-    }
-
-}
-
-Describe 'Test-FFmpegCapabilities - LGPL-Variante' {
-    It 'besteht ohne libx264/libx265, mit AMF + NVENC/NVDEC' {
-        $r = Test-FFmpegCapabilities `
-            -EncodersText $script:EncodersLgpl `
-            -DecodersText $script:DecodersWithDav1d `
-            -HwaccelsText $script:HwaccelsWithCuda `
-            -Variant 'lgpl'
-        $r.Success | Should -BeTrue -Because $r.Message
-        $r.Violations.Count | Should -Be 0
-    }
-
-    It 'schlägt fehl und benennt den unerwarteten GPL-Encoder libx264/libx265' {
-        $r = Test-FFmpegCapabilities `
-            -EncodersText $script:EncodersGpl `
-            -DecodersText $script:DecodersWithDav1d `
-            -HwaccelsText $script:HwaccelsWithCuda `
-            -Variant 'lgpl'
-        $r.Success | Should -BeFalse
-        ($r.Violations -join ' ') | Should -Match 'libx264'
-        ($r.Violations -join ' ') | Should -Match 'Unerwarteter'
-    }
-}
-
-Describe 'Test-FFmpegCapabilities - Hardware-Fähigkeiten (beide Varianten)' {
-    It 'schlägt fehl, wenn AMF-Encoder fehlen' {
-        $encodersNoAmf = @'
-Encoders:
- ------
- V....D libx264              libx264 H.264
- V....D libx265              libx265 H.265
- V....D h264_nvenc           NVIDIA NVENC H.264 encoder
-'@
-        $r = Test-FFmpegCapabilities `
-            -EncodersText $encodersNoAmf `
-            -DecodersText $script:DecodersWithDav1d `
-            -HwaccelsText $script:HwaccelsWithCuda `
-            -Variant 'gpl'
-        $r.Success | Should -BeFalse
-        ($r.Violations -join ' ') | Should -Match 'AMF'
-    }
-
-    It 'schlägt fehl, wenn NVENC-Encoder fehlen' {
-        $encodersNoNvenc = @'
-Encoders:
- ------
- V....D libx264              libx264 H.264
- V....D libx265              libx265 H.265
- V....D h264_amf             AMD AMF H.264 Encoder
-'@
-        $r = Test-FFmpegCapabilities `
-            -EncodersText $encodersNoNvenc `
-            -DecodersText $script:DecodersWithDav1d `
-            -HwaccelsText $script:HwaccelsWithCuda `
-            -Variant 'gpl'
-        $r.Success | Should -BeFalse
-        ($r.Violations -join ' ') | Should -Match 'NVENC'
-    }
-
-    It 'schlägt fehl, wenn NVDEC/CUDA-Hwaccel fehlt' {
-        $r = Test-FFmpegCapabilities `
-            -EncodersText $script:EncodersGpl `
-            -DecodersText $script:DecodersWithDav1d `
-            -HwaccelsText $script:HwaccelsNoNvdec `
-            -Variant 'gpl'
-        $r.Success | Should -BeFalse
-        ($r.Violations -join ' ') | Should -Match 'NVDEC/NVENC'
-    }
+    . (Join-Path $script:RepoRoot 'scripts/verify-capabilities.ps1')
 }
 
 Describe 'Get-FFmpegConfigFlags (config.h-Parser)' {
@@ -228,63 +36,68 @@ Describe 'Get-FFmpegConfigFlags (config.h-Parser)' {
     }
 }
 
-Describe 'Test-FFmpegConfigCapabilities (statisch, config.h)' {
+Describe 'Test-FFmpegConfigCapabilities (statisch, LGPL mit AMF + NVENC/NVDEC)' {
     BeforeAll {
-        $script:CfgGpl = @'
-#define CONFIG_LIBX264_ENCODER 1
-#define CONFIG_LIBX265_ENCODER 1
+        # Reiner LGPL-Build: keine GPL-Encoder, aber AMF + NVENC/NVDEC.
+        $script:CfgOk = @'
+#define CONFIG_LIBX264_ENCODER 0
+#define CONFIG_LIBX265_ENCODER 0
 #define CONFIG_H264_AMF_ENCODER 1
 #define CONFIG_HEVC_AMF_ENCODER 1
 #define CONFIG_H264_NVENC_ENCODER 1
 #define CONFIG_HEVC_NVENC_ENCODER 1
 #define CONFIG_CUDA 1
 #define CONFIG_NVDEC 1
-'@
-        $script:CfgLgpl = @'
-#define CONFIG_LIBX264_ENCODER 0
-#define CONFIG_LIBX265_ENCODER 0
-#define CONFIG_H264_AMF_ENCODER 1
-#define CONFIG_H264_NVENC_ENCODER 1
-#define CONFIG_CUDA 1
+#define CONFIG_AAC_ENCODER 1
 '@
     }
-    It 'GPL besteht mit libx264/libx265 + AMF + NVENC/NVDEC' {
-        $r = Test-FFmpegConfigCapabilities -ConfigText $script:CfgGpl -Variant gpl
+
+    It 'besteht fuer einen LGPL-Build mit AMF + NVENC/NVDEC' {
+        $r = Test-FFmpegConfigCapabilities -ConfigText $script:CfgOk
         $r.Success | Should -BeTrue -Because $r.Message
+        $r.Violations.Count | Should -Be 0
     }
-    It 'GPL schlaegt fehl, wenn libx264 fehlt' {
-        $r = Test-FFmpegConfigCapabilities -ConfigText $script:CfgLgpl -Variant gpl
+
+    It 'schlaegt fehl bei vorhandenem libx264-Encoder' {
+        $cfg = $script:CfgOk + "`n#define CONFIG_LIBX264_ENCODER 1"
+        $r = Test-FFmpegConfigCapabilities -ConfigText $cfg
         $r.Success | Should -BeFalse
         ($r.Violations -join ' ') | Should -Match 'libx264'
     }
-    It 'LGPL besteht ohne libx264/libx265, mit AMF + NVENC/NVDEC' {
-        $r = Test-FFmpegConfigCapabilities -ConfigText $script:CfgLgpl -Variant lgpl
-        $r.Success | Should -BeTrue -Because $r.Message
-    }
-    It 'LGPL schlaegt fehl bei unerwartetem libx265' {
-        $r = Test-FFmpegConfigCapabilities -ConfigText $script:CfgGpl -Variant lgpl
+
+    It 'schlaegt fehl bei vorhandenem libx265-Encoder' {
+        $cfg = $script:CfgOk + "`n#define CONFIG_LIBX265_ENCODER 1"
+        $r = Test-FFmpegConfigCapabilities -ConfigText $cfg
         $r.Success | Should -BeFalse
         ($r.Violations -join ' ') | Should -Match 'libx265'
     }
+
     It 'schlaegt fehl, wenn AMF-Encoder fehlen' {
         $cfg = @'
-#define CONFIG_LIBX264_ENCODER 1
-#define CONFIG_LIBX265_ENCODER 1
 #define CONFIG_H264_NVENC_ENCODER 1
 #define CONFIG_CUDA 1
 '@
-        $r = Test-FFmpegConfigCapabilities -ConfigText $cfg -Variant gpl
+        $r = Test-FFmpegConfigCapabilities -ConfigText $cfg
         $r.Success | Should -BeFalse
         ($r.Violations -join ' ') | Should -Match 'AMF'
     }
-    It 'schlaegt fehl, wenn NVDEC/CUDA fehlt' {
+
+    It 'schlaegt fehl, wenn NVENC-Encoder fehlen' {
         $cfg = @'
-#define CONFIG_LIBX264_ENCODER 1
-#define CONFIG_LIBX265_ENCODER 1
+#define CONFIG_H264_AMF_ENCODER 1
+#define CONFIG_CUDA 1
+'@
+        $r = Test-FFmpegConfigCapabilities -ConfigText $cfg
+        $r.Success | Should -BeFalse
+        ($r.Violations -join ' ') | Should -Match 'NVENC'
+    }
+
+    It 'schlaegt fehl, wenn NVDEC/CUDA-Hardware-Beschleunigung fehlt' {
+        $cfg = @'
 #define CONFIG_H264_AMF_ENCODER 1
 #define CONFIG_H264_NVENC_ENCODER 1
 '@
-        $r = Test-FFmpegConfigCapabilities -ConfigText $cfg -Variant gpl
+        $r = Test-FFmpegConfigCapabilities -ConfigText $cfg
         $r.Success | Should -BeFalse
         ($r.Violations -join ' ') | Should -Match 'NVDEC/CUDA'
     }

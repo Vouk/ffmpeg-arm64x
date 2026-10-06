@@ -218,37 +218,36 @@ Export-ModuleMember -Function Test-DllLibPairing, Get-CoreLibs
 
 # endregion Test-DllLibPairing
 
-# region Test-MsiCount (Task 3.3 — R7.6, Property 4)
+# region Test-MsiCount
 
-# Erwartete Anzahl erzeugter MSI-Installer: genau zwei (GPL + LGPL, R4.4/R7.6).
-$script:ExpectedMsiCount = 2
+# Erwartete Anzahl erzeugter MSI-Installer: genau einer (nur LGPL).
+$script:ExpectedMsiCount = 1
 
 function Test-MsiCount {
     <#
     .SYNOPSIS
-        Prüft, dass genau zwei MSI-Installer erzeugt wurden (Property 4, R7.6).
+        Prüft, dass genau ein MSI-Installer erzeugt wurde (nur LGPL-Variante).
     .DESCRIPTION
         Reine Logik ohne Dateisystemzugriff. Der Aufrufer ermittelt die Anzahl
         der erzeugten MSI-Installer (z. B. per Datei-Enumeration) und reicht sie
-        als Zählwert hinein. Erfolg genau dann, wenn die Anzahl == 2 ist
-        (GPL_Variant + LGPL_Variant). Bei jeder Abweichung (weniger oder mehr)
-        meldet die Funktion einen Fehler und benennt sowohl die erwartete (2)
-        als auch die tatsächliche Anzahl (R7.6).
+        als Zählwert hinein. Erfolg genau dann, wenn die Anzahl == 1 ist. Bei
+        jeder Abweichung (weniger oder mehr) meldet die Funktion einen Fehler
+        und benennt sowohl die erwartete (1) als auch die tatsächliche Anzahl.
     .PARAMETER Count
         Tatsächlich erzeugte Anzahl an MSI-Installern. Muss >= 0 sein.
     .OUTPUTS
         PSCustomObject mit:
-          Success  [bool] — genau dann $true, wenn Count == 2
-          Expected [int]  — erwartete Anzahl (immer 2)
+          Success  [bool] — genau dann $true, wenn Count == 1
+          Expected [int]  — erwartete Anzahl (immer 1)
           Actual   [int]  — übergebene tatsächliche Anzahl
           Message  [string] — menschenlesbare Zusammenfassung; bei Abweichung
                               werden erwartete und tatsächliche Anzahl benannt
     .EXAMPLE
-        Test-MsiCount -Count 2
+        Test-MsiCount -Count 1
         # Success = $true
     .EXAMPLE
-        Test-MsiCount -Count 1
-        # Success = $false; Message benennt erwartet 2 / tatsächlich 1
+        Test-MsiCount -Count 2
+        # Success = $false; Message benennt erwartet 1 / tatsächlich 2
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -265,7 +264,7 @@ function Test-MsiCount {
         $message = "Genau $expected MSI-Installer erzeugt."
     }
     else {
-        # R7.6: Abweichung mit erwarteter und tatsächlicher Anzahl benennen.
+        # Abweichung mit erwarteter und tatsächlicher Anzahl benennen.
         $message = "Abweichende Anzahl MSI-Installer: erwartet $expected, " +
                    "tatsächlich $Count."
     }
