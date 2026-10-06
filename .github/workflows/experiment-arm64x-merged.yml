@@ -125,11 +125,10 @@ jobs:
           set "MSYS2_PATH_TYPE=inherit"
           bash -lc "cd \"$FFMPEG_SRC\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 || (echo '==== config.log tail ===='; tail -40 ffbuild/config.log; exit 1)"
           if errorlevel 1 exit /b 1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\patch-keep-objs.ps1" -SourceDir "%FFMPEG_SRC%"
+          if errorlevel 1 exit /b 1
           call "%VCVARS%"
-          rem .SECONDARY: haelt make davon ab, Zwischendateien (u.a. die
-          rem <dll>.objs-Response-Listen) nach dem Link zu loeschen -- so kann
-          rem die Capture die EXAKTE Objektliste lesen, die FFmpeg gelinkt hat.
-          bash -lc "cd \"$FFMPEG_SRC\" && printf '\n.SECONDARY:\n' >> ffbuild/config.mak && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll && echo '--- .objs vorhanden? ---' && ls -la libavutil/*.objs libavcodec/*.objs 2>/dev/null || true"
+          bash -lc "cd \"$FFMPEG_SRC\" && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll && echo '--- .objs.keep vorhanden? ---' && ls -la libavutil/*.objs.keep libavcodec/*.objs.keep 2>/dev/null || true"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
             -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64 -StageDir "%STAGE_DIR%" -LibBase avutil-60 -RequireObjsFile
@@ -147,7 +146,12 @@ jobs:
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
           set "MSYS2_PATH_TYPE=inherit"
-          bash -lc "cd \"$FFMPEG_SRC\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --extra-cflags=-arm64EC --extra-ldflags=-machine:arm64ec && printf '\nCFLAGS += -arm64EC\nLDFLAGS += -machine:arm64ec\n.SECONDARY:\n' >> ffbuild/config.mak && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll && ls -la libavutil/*.objs libavcodec/*.objs 2>/dev/null || true"
+          bash -lc "cd \"$FFMPEG_SRC\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --extra-cflags=-arm64EC --extra-ldflags=-machine:arm64ec && printf '\nCFLAGS += -arm64EC\nLDFLAGS += -machine:arm64ec\n' >> ffbuild/config.mak || (echo '==== config.log tail ===='; tail -40 ffbuild/config.log; exit 1)"
+          if errorlevel 1 exit /b 1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\patch-keep-objs.ps1" -SourceDir "%FFMPEG_SRC%"
+          if errorlevel 1 exit /b 1
+          call "%VCVARS%"
+          bash -lc "cd \"$FFMPEG_SRC\" && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll && echo '--- .objs.keep vorhanden? ---' && ls -la libavutil/*.objs.keep libavcodec/*.objs.keep 2>/dev/null || true"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
             -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64ec -StageDir "%STAGE_DIR%" -LibBase avutil-60 -RequireObjsFile
