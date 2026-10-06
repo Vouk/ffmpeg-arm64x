@@ -78,6 +78,14 @@ param(
     # ff_aac_sbr_vlc beim grossen avcodec).
     [Parameter()] [switch] $RequireObjsFile,
 
+    # (Capture) Pfad zu einer /LINKREPROFULLPATHRSP-Datei, die link.exe beim
+    # ARM64-/ARM64EC-Link GESCHRIEBEN hat. Sie enthaelt die ABSOLUTEN Pfade
+    # ALLER Linker-Eingaben (Objekte, Import-Libs, .def) -- also GENAU das, was
+    # FFmpeg gelinkt hat, direkt vom Linker (nicht aus make-Artefakten
+    # erraten). Ist dieser Pfad gesetzt, ist er die autoritative Quelle fuer
+    # die Objekt- und Lib-Liste.
+    [Parameter()] [string] $LinkReproRsp = '',
+
     # (Merge) Zusaetzliche Import-Libs, gegen die gelinkt wird -- insbesondere
     # die bereits GEMERGTEN ARM64X-Import-Libs der Abhaengigkeiten (z. B. das
     # avutil.lib aus dem avutil-Merge, wenn avcodec gemergt wird). Eine
@@ -151,13 +159,69 @@ function Find-DefaultLibBase {
 # Capture: Objekte + .def (+ Import-Lib) einer Architektur sichern
 # ---------------------------------------------------------------------------
 
+function Read-LinkReproInputs {
+    <#
+    .SYNOPSIS
+        Parst eine /LINKREPROFULLPATHRSP-Datei und liefert die absoluten Pfade
+        der Linker-Eingaben, getrennt nach Objekten (.o/.obj), Import-Libs
+        (.lib) und .def. Reine Logik (nur Dateilesen).
+    .DESCRIPTION
+        Die .rsp enthaelt je Eintrag einen (ggf. gequoteten) absoluten Pfad,
+        teils mehrere pro Zeile. Pfade koennen Leerzeichen enthalten -> nur
+        gequotete Tokens UND nackte Tokens beruecksichtigen.
+    .OUTPUTS
+        [pscustomobject] mit Objs ([string[]]), Libs ([string[]]), Def ([string]).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string] $RspPath)
+
+    if (-not (Test-Path -LiteralPath $RspPath)) {
+        throw "LinkRepro-Datei nicht gefunden: '$RspPath'."
+    }
+    $raw = [System.IO.File]::ReadAllText($RspPath)
+
+    # Tokens: entweder "..." (gequotet, darf Leerzeichen enthalten) oder
+    # Whitespace-getrennte nackte Tokens.
+    $tokens = [System.Collections.Generic.List[string]]::new()
+    foreach ($m in [regex]::Matches($raw, '"([^"]+)"|(\S+)')) {
+        $t = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
+        if (-not [string]::IsNullOrWhiteSpace($t)) { $tokens.Add($t) }
+    }
+
+    $objs = [System.Collections.Generic.List[string]]::new()
+    $libs = [System.Collections.Generic.List[string]]::new()
+    $def = $null
+    foreach ($t in $tokens) {
+        # Linker-Optionen (beginnen mit / oder -) ueberspringen -- ausser die
+        # eingebettete /def:, aus der wir den .def-Pfad ziehen.
+        if ($t -match '^[/-]') {
+            if ($t -match '(?i)^[/-]def:(.+)$') { $def = $Matches[1].Trim('"') }
+            continue
+        }
+        switch -regex ($t) {
+            '(?i)\.(o|obj)$' { $objs.Add($t); break }
+            '(?i)\.lib$'     { $libs.Add($t); break }
+            '(?i)\.def$'     { if (-not $def) { $def = $t }; break }
+            default          { }
+        }
+    }
+
+    return [pscustomobject]@{
+        Objs = [string[]]$objs.ToArray()
+        Libs = [string[]]$libs.ToArray()
+        Def  = $def
+    }
+}
+
 function Invoke-Capture {
     param(
         [Parameter(Mandatory)][string] $SourceDir,
         [Parameter(Mandatory)][string] $Arch,
         [Parameter(Mandatory)][string] $StageDir,
         [Parameter(Mandatory)][string] $LibBase,
-        [switch] $RequireObjsFile
+        [switch] $RequireObjsFile,
+        [string] $LinkReproRsp = ''
     )
 
     $archKey = $Arch.ToLowerInvariant()
@@ -173,6 +237,56 @@ function Invoke-Capture {
     $stage = Join-Path (Join-Path $StageDir $stem) $archKey
     $objStage = Join-Path $stage 'obj'
     New-Item -ItemType Directory -Force -Path $objStage | Out-Null
+
+    # ============================================================
+    # Autoritativer Pfad: /LINKREPROFULLPATHRSP vom Linker.
+    # ============================================================
+    if (-not [string]::IsNullOrWhiteSpace($LinkReproRsp)) {
+        $repro = Read-LinkReproInputs -RspPath $LinkReproRsp
+        if ($repro.Objs.Count -eq 0) {
+            throw "LinkRepro '$LinkReproRsp' enthaelt keine Objekte."
+        }
+        Write-Host "Capture ($archKey/$LibBase): LinkRepro -> $($repro.Objs.Count) Objekt(e), $($repro.Libs.Count) Lib(s)."
+
+        # Objekte flach ins Stage kopieren (absolute Pfade; Namenskollisionen
+        # ueber einen Index vermeiden).
+        $stagedObjs = [System.Collections.Generic.List[string]]::new()
+        $i = 0
+        foreach ($o in $repro.Objs) {
+            if (-not (Test-Path -LiteralPath $o)) { throw "LinkRepro-Objekt fehlt: '$o'." }
+            $flat = ('{0:D4}_' -f $i) + (Split-Path -Leaf $o)
+            $dest = Join-Path $objStage $flat
+            Copy-Item -LiteralPath $o -Destination $dest -Force
+            $stagedObjs.Add($dest)
+            $i++
+        }
+
+        # .def: bevorzugt die aus der .rsp; sonst die neben der DLL.
+        $defDest = Join-Path $stage "$LibBase.def"
+        $defSrc = if ($repro.Def -and (Test-Path -LiteralPath $repro.Def)) { $repro.Def } else { Join-Path $srcLibDir "$LibBase.def" }
+        if (-not (Test-Path -LiteralPath $defSrc)) { throw ".def nicht gefunden (weder LinkRepro noch '$srcLibDir'): '$defSrc'." }
+        Copy-Item -LiteralPath $defSrc -Destination $defDest -Force
+
+        # Externe (nicht-FFmpeg) Import-Libs aus der .rsp mitnehmen -- die
+        # FFmpeg-eigenen Lib-Verweise (libavutil etc.) ersetzt der Merge durch
+        # die gemergten ARM64X-Import-Libs, daher hier ausfiltern.
+        $libStage = Join-Path $stage 'extralib'
+        New-Item -ItemType Directory -Force -Path $libStage | Out-Null
+        foreach ($l in $repro.Libs) {
+            if ($l -match '(?i)[\\/]lib(avutil|avcodec|avformat|avfilter|avdevice|swscale|swresample)[\\/]') { continue }
+            if (Test-Path -LiteralPath $l) {
+                Copy-Item -LiteralPath $l -Destination (Join-Path $libStage (Split-Path -Leaf $l)) -Force
+            }
+        }
+
+        $manifest = [pscustomobject]@{
+            LibBase = $LibBase; Arch = $archKey; Def = "$LibBase.def"
+            Objs = @($stagedObjs | ForEach-Object { Split-Path -Leaf $_ }); Source = 'linkrepro'
+        }
+        $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'manifest.json') -Encoding UTF8
+        Write-Host "Capture ($archKey/$LibBase): $($stagedObjs.Count) Objekt(e) + $LibBase.def (LinkRepro) nach '$stage'."
+        return $manifest
+    }
 
     # 1) Objektliste ermitteln. Quelle der Wahrheit ist FFmpegs
     #    <base>.dll.objs-Response-Datei: sie enthaelt GENAU die Objekte (inkl.
@@ -347,6 +461,20 @@ function Invoke-Merge {
         'kernel32.lib'
     )
 
+    # Aus der LinkRepro gestagte EXTERNE Import-Libs (z. B. HW-Encoder- oder
+    # andere Nicht-FFmpeg-Libs), die FFmpeg beim Original-Link verwendet hat.
+    # Von der ARM64EC-Seite nehmen (dort ist der vollstaendige Satz); der
+    # Linker waehlt fuer /machine:arm64x je Seite die passende Variante.
+    $stagedExtra = @()
+    $extraDir = Join-Path $arm64ecStage 'extralib'
+    if (Test-Path -LiteralPath $extraDir) {
+        $stagedExtra = @(Get-ChildItem -LiteralPath $extraDir -File -Filter '*.lib' |
+            ForEach-Object { $_.Name } | Sort-Object -Unique)
+        if ($stagedExtra.Count -gt 0) {
+            Write-Host "Merge: $($stagedExtra.Count) externe Import-Lib(s) aus LinkRepro: $($stagedExtra -join ', ')"
+        }
+    }
+
     # Zusaetzliche (gemergte) Abhaengigkeits-Import-Libs, z. B. avutil.lib beim
     # avcodec-Merge. Eine ARM64X-Import-Lib deckt beide ABI-Seiten ab.
     $depLibs = @()
@@ -359,6 +487,8 @@ function Invoke-Merge {
         Write-Host "Merge: $($depLibs.Count) Abhaengigkeits-Import-Lib(s): $($depLibs -join ', ')"
     }
 
+    $extraLibPaths = @($stagedExtra | ForEach-Object { Join-Path $extraDir $_ })
+
     $linkArgs = @(
         '/dll'
         '/machine:arm64x'
@@ -368,7 +498,7 @@ function Invoke-Merge {
         "/defArm64Native:$arm64Def"
         "@$ecRsp"
         "@$natRsp"
-    ) + $depLibs + $sysLibs
+    ) + $depLibs + $extraLibPaths + $sysLibs
 
     Write-Host "Merge-Link ($LibBase): $($arm64Objs.Count) ARM64- + $($arm64ecObjs.Count) ARM64EC-Objekte -> $outDll"
     Write-Host "  link $($linkArgs -join ' ')"
@@ -404,7 +534,8 @@ if ($Mode -ieq 'Capture') {
     if ([string]::IsNullOrWhiteSpace($Arch))      { throw "-Arch ist im Capture-Modus erforderlich." }
     # Default: avutil. Fuer andere Libs -LibBase (z. B. avcodec-62) uebergeben.
     $base = if ([string]::IsNullOrWhiteSpace($LibBase)) { Find-DefaultLibBase -SourceDir $SourceDir -Stem 'avutil' } else { $LibBase }
-    Invoke-Capture -SourceDir $SourceDir -Arch $Arch -StageDir $StageDir -LibBase $base -RequireObjsFile:$RequireObjsFile
+    Invoke-Capture -SourceDir $SourceDir -Arch $Arch -StageDir $StageDir -LibBase $base `
+        -RequireObjsFile:$RequireObjsFile -LinkReproRsp $LinkReproRsp
 }
 else {
     if ([string]::IsNullOrWhiteSpace($OutputDir)) { throw "-OutputDir ist im Merge-Modus erforderlich." }

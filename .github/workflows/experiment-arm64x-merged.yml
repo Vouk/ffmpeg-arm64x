@@ -123,18 +123,25 @@ jobs:
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
           set "MSYS2_PATH_TYPE=inherit"
-          bash -lc "cd \"$FFMPEG_SRC\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 || (echo '==== config.log tail ===='; tail -40 ffbuild/config.log; exit 1)"
-          if errorlevel 1 exit /b 1
-          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\patch-keep-objs.ps1" -SourceDir "%FFMPEG_SRC%"
+          rem /LINKREPROFULLPATHRSP (VS 17.11+) laesst link.exe die EXAKTEN
+          rem Linker-Eingaben (abs. Pfade: objs, libs, def) in eine .rsp
+          rem schreiben -- die autoritative Objektliste direkt vom Linker.
+          rem Kurzer Pfad (C:\lr) wegen der MAX_PATH-Grenze der .rsp-Eintraege.
+          if not exist C:\lr mkdir C:\lr
+          bash -lc "cd \"$FFMPEG_SRC\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --extra-ldflags=/LINKREPROFULLPATHRSP:C:/lr/cur.rsp || (echo '==== config.log tail ===='; tail -40 ffbuild/config.log; exit 1)"
           if errorlevel 1 exit /b 1
           call "%VCVARS%"
-          bash -lc "cd \"$FFMPEG_SRC\" && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll && echo '--- .objs.keep vorhanden? ---' && ls -la libavutil/*.objs.keep libavcodec/*.objs.keep 2>/dev/null || true"
+          rem avutil zuerst linken -> cur.rsp = avutil-Eingaben -> sichern.
+          bash -lc "cd \"$FFMPEG_SRC\" && rm -f /c/lr/cur.rsp; make -j CCDEP= CXXDEP= libavutil/avutil-60.dll && cp /c/lr/cur.rsp /c/lr/avutil.arm64.rsp && echo '--- avutil rsp ---' && wc -l /c/lr/avutil.arm64.rsp"
+          if errorlevel 1 exit /b 1
+          rem avcodec linken -> cur.rsp = avcodec-Eingaben -> sichern.
+          bash -lc "cd \"$FFMPEG_SRC\" && rm -f /c/lr/cur.rsp; make -j CCDEP= CXXDEP= libavcodec/avcodec-62.dll && cp /c/lr/cur.rsp /c/lr/avcodec.arm64.rsp && echo '--- avcodec rsp ---' && wc -l /c/lr/avcodec.arm64.rsp"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
-            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64 -StageDir "%STAGE_DIR%" -LibBase avutil-60 -RequireObjsFile
+            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64 -StageDir "%STAGE_DIR%" -LibBase avutil-60 -LinkReproRsp C:\lr\avutil.arm64.rsp
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
-            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64 -StageDir "%STAGE_DIR%" -LibBase avcodec-62 -RequireObjsFile
+            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64 -StageDir "%STAGE_DIR%" -LibBase avcodec-62 -LinkReproRsp C:\lr\avcodec.arm64.rsp
           if errorlevel 1 exit /b 1
 
       # ---------------------------------------------------------------------
@@ -146,18 +153,19 @@ jobs:
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
           set "MSYS2_PATH_TYPE=inherit"
-          bash -lc "cd \"$FFMPEG_SRC\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --extra-cflags=-arm64EC --extra-ldflags=-machine:arm64ec && printf '\nCFLAGS += -arm64EC\nLDFLAGS += -machine:arm64ec\n' >> ffbuild/config.mak || (echo '==== config.log tail ===='; tail -40 ffbuild/config.log; exit 1)"
-          if errorlevel 1 exit /b 1
-          pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\patch-keep-objs.ps1" -SourceDir "%FFMPEG_SRC%"
+          if not exist C:\lr mkdir C:\lr
+          bash -lc "cd \"$FFMPEG_SRC\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --extra-cflags=-arm64EC --extra-ldflags=\"-machine:arm64ec /LINKREPROFULLPATHRSP:C:/lr/cur.rsp\" && printf '\nCFLAGS += -arm64EC\nLDFLAGS += -machine:arm64ec\n' >> ffbuild/config.mak || (echo '==== config.log tail ===='; tail -40 ffbuild/config.log; exit 1)"
           if errorlevel 1 exit /b 1
           call "%VCVARS%"
-          bash -lc "cd \"$FFMPEG_SRC\" && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll && echo '--- .objs.keep vorhanden? ---' && ls -la libavutil/*.objs.keep libavcodec/*.objs.keep 2>/dev/null || true"
+          bash -lc "cd \"$FFMPEG_SRC\" && rm -f /c/lr/cur.rsp; make -j CCDEP= CXXDEP= libavutil/avutil-60.dll && cp /c/lr/cur.rsp /c/lr/avutil.arm64ec.rsp && wc -l /c/lr/avutil.arm64ec.rsp"
+          if errorlevel 1 exit /b 1
+          bash -lc "cd \"$FFMPEG_SRC\" && rm -f /c/lr/cur.rsp; make -j CCDEP= CXXDEP= libavcodec/avcodec-62.dll && cp /c/lr/cur.rsp /c/lr/avcodec.arm64ec.rsp && wc -l /c/lr/avcodec.arm64ec.rsp"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
-            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64ec -StageDir "%STAGE_DIR%" -LibBase avutil-60 -RequireObjsFile
+            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64ec -StageDir "%STAGE_DIR%" -LibBase avutil-60 -LinkReproRsp C:\lr\avutil.arm64ec.rsp
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
-            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64ec -StageDir "%STAGE_DIR%" -LibBase avcodec-62 -RequireObjsFile
+            -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64ec -StageDir "%STAGE_DIR%" -LibBase avcodec-62 -LinkReproRsp C:\lr\avcodec.arm64ec.rsp
           if errorlevel 1 exit /b 1
 
       # ---------------------------------------------------------------------
