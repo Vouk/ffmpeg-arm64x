@@ -22,6 +22,16 @@ BeforeAll {
             -OutputDir (Join-Path $root "out") -HwHeadersDir $hw -DryRun 6>$null
     }
 
+    function New-MergedPlan {
+        param([string] $Arch = "arm64")
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString("N").Substring(0, 8))
+        $hw = Join-Path $root "hwheaders"
+        $lr = Join-Path $root "lr"
+        New-Item -ItemType Directory -Force -Path $lr | Out-Null
+        & $script:BuildFFmpeg -Arch $Arch -SourceDir (Join-Path $root "src") `
+            -OutputDir (Join-Path $root "out") -HwHeadersDir $hw -LinkReproDir $lr -DryRun 6>$null
+    }
+
     function New-GplPlan {
         param([string] $Arch = "arm64")
         $root = Join-Path $TestDrive ([guid]::NewGuid().ToString("N").Substring(0, 8))
@@ -95,6 +105,31 @@ Describe "build-ffmpeg: configure-Flags (GPL, mit x264/x265 + HW-Encoder)" {
         { & $script:BuildFFmpeg -Arch arm64 -Variant gpl -SourceDir (Join-Path $root "src") `
             -OutputDir (Join-Path $root "out") -HwHeadersDir $hw -DepsDir $deps -DryRun 6>$null } |
             Should -Throw -ExpectedMessage "*x264-Deps*"
+    }
+}
+
+Describe "build-ffmpeg: MERGED-Modus Tools-Build (ffmpeg.exe/ffprobe.exe)" {
+    It "entfernt den Repro-Capture-Flag aus config.mak VOR dem Tools-Link" {
+        # Der /LINKREPROFULLPATHRSP-Flag steht in config.mak LDFLAGS und wuerde
+        # sonst auch den ffmpeg_g.exe-Link treiben -> LNK1104 'cannot open
+        # cur.rsp'. Vor dem Tools-Make wird er per sed entfernt.
+        $bash = @((New-MergedPlan).BashScript -split "`n")
+        $sed = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "sed.*LINKREPROFULLPATHRSP.*config\.mak" })
+        $tools = [Array]::FindIndex($bash, [Predicate[string]] { param($l) $l -match "make .*ffmpeg\.exe ffprobe\.exe" })
+        $sed   | Should -BeGreaterThan 0
+        $tools | Should -BeGreaterThan $sed
+    }
+
+    It "baut die Tools OHNE '|| true' (echter Link-Fehler stoppt den Build)" {
+        $bash = @((New-MergedPlan).BashScript -split "`n")
+        $toolsLine = @($bash | Where-Object { $_ -match "make .*ffmpeg\.exe ffprobe\.exe" })
+        $toolsLine.Count | Should -Be 1
+        $toolsLine[0] | Should -Not -Match "\|\| true"
+    }
+
+    It "baut die Tools NUR in der arm64-Ansicht, nicht fuer arm64ec" {
+        $bash = @((New-MergedPlan -Arch "arm64ec").BashScript -split "`n")
+        ($bash -join "`n") | Should -Not -Match "make .*ffmpeg\.exe ffprobe\.exe"
     }
 }
 

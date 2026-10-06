@@ -396,8 +396,23 @@ function Get-FFmpegBuildPlan {
         }
         # Zusaetzlich die Tools (ffmpeg/ffprobe) bauen -- sie bleiben native
         # ARM64 (nur aus der ARM64-Ansicht uebernommen).
+        #
+        # WICHTIG: Der /LINKREPROFULLPATHRSP:...-Capture-Flag steht in config.mak
+        # LDFLAGS und gilt daher auch fuer den ffmpeg_g.exe-Link. Dort schlaegt
+        # er fehl ("LINK : fatal error LNK1104: cannot open file
+        # 'C:\lr\...\cur.rsp'"), wodurch make ffmpeg.exe NICHT erzeugt --
+        # bislang vom nachgestellten "|| true" verschluckt, sodass spaeter die
+        # ARM64X-Verifikation ueber die fehlende ffmpeg.exe stolpert. Wir
+        # brauchen die Capture NUR fuer die DLLs; fuer die Tools wird der
+        # Repro-Flag daher aus config.mak entfernt (die x264/x265-LIBPATHs und
+        # der Maschinen-Flag bleiben erhalten). Danach normal verlinken --
+        # OHNE "|| true", damit ein echter Link-Fehler den Build stoppt statt
+        # still eine fehlende ffmpeg.exe zu hinterlassen.
         if ($archKey -eq 'arm64') {
-            $buildLines.Add("make -j$Jobs $makeOverrides ffmpeg.exe ffprobe.exe || make -j$Jobs $makeOverrides ffmpeg ffprobe || true")
+            $buildLines.Add('# Repro-Capture-Flag vor dem Tools-Link aus config.mak entfernen (sonst LNK1104).')
+            $buildLines.Add("sed -i 's#[/-]LINKREPROFULLPATHRSP:[^ ]*##g' ffbuild/config.mak")
+            $buildLines.Add('grep -nE "^LDFLAGS" ffbuild/config.mak || true')
+            $buildLines.Add("make -j$Jobs $makeOverrides ffmpeg.exe ffprobe.exe")
         }
 
         $bashLines = @(
