@@ -396,7 +396,8 @@ jobs:
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\merge-arm64x-merged.ps1" ^
             -LinkReproDir "%LINKREPRO_DIR%" ^
             -OutputDir "%OUT_DIR%\ffmpeg\arm64x\bin" ^
-            -Arm64BinDir "%OUT_DIR%\ffmpeg\arm64\bin"
+            -Arm64BinDir "%OUT_DIR%\ffmpeg\arm64\bin" ^
+            -Arm64SourceDir "%FFMPEG_SRC_ARM64%"
           if errorlevel 1 exit /b 1
 
       # ---------------------------------------------------------------------

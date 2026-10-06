@@ -55,6 +55,9 @@ param(
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $LinkReproDir,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $OutputDir,
     [Parameter()][string] $Arm64BinDir,
+    # Quellbaum der ARM64-Ansicht; im MERGED-Modus liegen ffmpeg.exe/ffprobe.exe
+    # dort (kein 'make install'). Wird zusaetzlich zu -Arm64BinDir durchsucht.
+    [Parameter()][string] $Arm64SourceDir,
     [Parameter()][ValidateNotNullOrEmpty()][string] $LinkExe = 'link.exe'
 )
 
@@ -259,16 +262,26 @@ if ($MyInvocation.InvocationName -ne '.') {
         $mergedLibOfStem[$stem] = $stemLib
     }
 
-    # Native ARM64-Tools uebernehmen.
-    if ($Arm64BinDir -and (Test-Path -LiteralPath $Arm64BinDir)) {
-        foreach ($exe in @('ffmpeg.exe','ffprobe.exe')) {
-            $src = Join-Path $Arm64BinDir $exe
-            if (Test-Path -LiteralPath $src) {
-                Copy-Item -LiteralPath $src -Destination (Join-Path $OutputDir $exe) -Force
-                Write-Host "Tool uebernommen (native ARM64): $exe"
-            } else {
-                Write-Host "WARN: $exe nicht in '$Arm64BinDir' gefunden."
+    # Native ARM64-Tools uebernehmen. Suchorte: -Arm64BinDir (falls doch
+    # installiert) UND der ARM64-Quellbaum (MERGED: dort liegen die Tools nach
+    # 'make ffmpeg.exe ffprobe.exe'). Beide Namensformen (.exe und ohne).
+    $searchRoots = @()
+    if ($Arm64BinDir     -and (Test-Path -LiteralPath $Arm64BinDir))     { $searchRoots += $Arm64BinDir }
+    if ($Arm64SourceDir  -and (Test-Path -LiteralPath $Arm64SourceDir))  { $searchRoots += $Arm64SourceDir }
+    foreach ($exe in @('ffmpeg.exe','ffprobe.exe')) {
+        $found = $null
+        foreach ($root in $searchRoots) {
+            foreach ($cand in @($exe, ($exe -replace '\.exe$',''))) {
+                $p = Join-Path $root $cand
+                if (Test-Path -LiteralPath $p) { $found = $p; break }
             }
+            if ($found) { break }
+        }
+        if ($found) {
+            Copy-Item -LiteralPath $found -Destination (Join-Path $OutputDir $exe) -Force
+            Write-Host "Tool uebernommen (native ARM64): $exe  <- $found"
+        } else {
+            Write-Host "WARN: $exe in keinem Suchort gefunden: $($searchRoots -join ', ')"
         }
     }
 
