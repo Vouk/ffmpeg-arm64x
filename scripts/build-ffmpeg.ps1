@@ -106,11 +106,13 @@ param(
     [Parameter()]
     [string] $LinkReproDir,
 
-    # pkg-config-Binary fuer FFmpegs configure. Default /usr/bin/pkgconf, damit
-    # NICHT versehentlich das kaputte Strawberry-Perl-pkg-config aus dem
-    # geerbten Windows-PATH gewaehlt wird (schlug ffnvcodec-Erkennung).
+    # pkg-config-Binary fuer FFmpegs configure. LEER = FFmpeg-Default (es sucht
+    # 'pkg-config' im PATH); der bekannte gute Forwarder-Lauf hat ffnvcodec so
+    # gefunden. Nur setzen, wenn ein konkreter Pfad erzwungen werden soll
+    # (z. B. /ucrt64/bin/pkgconf). /usr/bin/pkgconf existiert in der UCRT64-
+    # Umgebung NICHT -> fuehrte zu "pkgconf not found".
     [Parameter()]
-    [string] $PkgConfig = '/usr/bin/pkgconf',
+    [string] $PkgConfig = '',
 
     [Parameter()]
     [string] $Msys2Bash = 'C:\msys64\usr\bin\bash.exe',
@@ -227,10 +229,12 @@ function Get-FFmpegBuildPlan {
 
     # MERGED-Modus: /LINKREPROFULLPATHRSP in die Linker-Flags, damit link.exe
     # je DLL die exakte Eingabeliste (objs/libs/def, absolute Pfade) schreibt.
-    # Kurzer Zielpfad (MAX_PATH-Grenze der rsp-Eintraege).
+    # WINDOWS-Pfad mit Forward-Slashes (link.exe akzeptiert /), NICHT die
+    # MSYS2-POSIX-Form -- link.exe braucht den nativen Pfad. MSYS2_ARG_CONV_EXCL
+    # (siehe unten) verhindert zusaetzlich die Pfadkonvertierung des Schalters.
     if (-not [string]::IsNullOrWhiteSpace($LinkReproDir)) {
-        $lrPosix = ConvertTo-Msys2Path -Path (Join-Path $LinkReproDir 'cur.rsp')
-        $configureArgs.Add("--extra-ldflags=/LINKREPROFULLPATHRSP:$lrPosix")
+        $lrWin = (Join-Path $LinkReproDir 'cur.rsp') -replace '\\', '/'
+        $configureArgs.Add("--extra-ldflags=/LINKREPROFULLPATHRSP:$lrWin")
     }
 
     # Hardware-Header (AMF + nv-codec, von scripts/install-hwheaders.ps1
@@ -381,6 +385,13 @@ function Get-FFmpegBuildPlan {
     # ARM64. Die Erzwingung erfolgt daher zuverlaessig ueber das Anhaengen der
     # Flags an ffbuild/config.mak (siehe $ecForce oben), nicht ueber die Umgebung.
     $envVars = @{ 'MSYS2_PATH_TYPE' = 'inherit' }
+    # MSYS2 wandelt Argumente, die wie POSIX-Pfade aussehen, automatisch in
+    # Windows-Pfade um. Das zerstoert den Linker-Schalter
+    # /LINKREPROFULLPATHRSP:... ("/LINK..." -> C:\msys64\LINK..., ":" -> ";").
+    # MSYS2_ARG_CONV_EXCL verhindert die Konvertierung fuer diesen Schalter.
+    if (-not [string]::IsNullOrWhiteSpace($LinkReproDir)) {
+        $envVars['MSYS2_ARG_CONV_EXCL'] = '/LINKREPROFULLPATHRSP'
+    }
 
     return [pscustomobject]@{
         Arch           = $archKey

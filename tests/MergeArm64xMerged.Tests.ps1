@@ -126,8 +126,8 @@ Describe 'build-ffmpeg: MERGED-Modus (DryRun-Flags)' {
     It 'setzt /LINKREPROFULLPATHRSP in den configure-Flags' {
         ($(New-MergedPlan).ConfigureArgs -join ' ') | Should -Match 'LINKREPROFULLPATHRSP'
     }
-    It 'nagelt pkg-config auf /usr/bin/pkgconf fest' {
-        ($(New-MergedPlan).ConfigureArgs -join ' ') | Should -Match '--pkg-config=/usr/bin/pkgconf'
+    It 'erzwingt KEIN --pkg-config per Default (FFmpeg-Default nutzen)' {
+        ($(New-MergedPlan).ConfigureArgs -join ' ') | Should -Not -Match '--pkg-config='
     }
     It 'markiert den Plan als Merged' {
         (New-MergedPlan).Merged | Should -BeTrue
