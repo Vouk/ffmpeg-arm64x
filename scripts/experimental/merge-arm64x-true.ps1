@@ -93,17 +93,32 @@ function Resolve-LibDirName {
 function Find-DefaultLibBase {
     <#
     .SYNOPSIS
-        Sucht im Quellbaum die avutil-*.dll.objs-Response-Datei und leitet den
-        Basisnamen ab (z. B. 'avutil-60').
+        Leitet den avutil-Basisnamen (z. B. 'avutil-60') aus dem Quellbaum ab.
+    .DESCRIPTION
+        Primaer ueber die erzeugte avutil-*.dll (robust, immer vorhanden nach
+        dem Link). Faellt zurueck auf die .dll.objs-Response-Datei. KEIN
+        -Filter (dessen Mehrfachpunkt-/8.3-Matching ist unzuverlaessig) --
+        stattdessen volle Enumeration + Regex.
     #>
     param([Parameter(Mandatory)][string] $SourceDir)
     $libav = Join-Path $SourceDir 'libavutil'
-    $objs = Get-ChildItem -LiteralPath $libav -Filter 'avutil-*.dll.objs' -File -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if (-not $objs) {
-        throw "Keine avutil-*.dll.objs im Quellbaum gefunden ('$libav'). Wurde 'make' fuer avutil ausgefuehrt?"
+    if (-not (Test-Path -LiteralPath $libav)) {
+        throw "libavutil-Verzeichnis fehlt: '$libav'. Wurde 'make' ausgefuehrt?"
     }
-    return ($objs.Name -replace '\.dll\.objs$', '')   # avutil-60.dll.objs -> avutil-60
+
+    $all = Get-ChildItem -LiteralPath $libav -File -ErrorAction SilentlyContinue
+
+    # 1) ueber die DLL (sichere Quelle): avutil-<ver>.dll
+    $dll = $all | Where-Object { $_.Name -match '^(avutil-\d+)\.dll$' } | Select-Object -First 1
+    if ($dll) { return ($dll.Name -replace '\.dll$', '') }
+
+    # 2) Fallback: ueber die .dll.objs-Response-Datei.
+    $objs = $all | Where-Object { $_.Name -match '^(avutil-\d+)\.dll\.objs$' } | Select-Object -First 1
+    if ($objs) { return ($objs.Name -replace '\.dll\.objs$', '') }
+
+    # Diagnose: zeigen, was tatsaechlich im Verzeichnis liegt.
+    $listing = ($all | ForEach-Object { $_.Name }) -join ', '
+    throw "Kein avutil-<ver>.dll / .dll.objs in '$libav' gefunden. Inhalt: $listing"
 }
 
 # ---------------------------------------------------------------------------
@@ -129,17 +144,26 @@ function Invoke-Capture {
     $objStage = Join-Path $stage 'obj'
     New-Item -ItemType Directory -Force -Path $objStage | Out-Null
 
-    # 1) .objs-Response-Datei lesen: eine Liste von Objektpfaden (ggf. relativ
-    #    zum Quellbaum). Jede Zeile/Token, das auf .o endet, ist ein Objekt.
+    # 1) Objektliste ermitteln. Bevorzugt aus der .objs-Response-Datei (sie
+    #    enthaelt GENAU die Objekte, die FFmpeg in die DLL gelinkt hat --
+    #    inkl. der korrekten Reihenfolge und ohne Test-/Hilfsobjekte). Fehlt
+    #    sie, Fallback: alle *.o im lib-Verzeichnis.
     $objsFile = Join-Path $srcLibDir "$LibBase.dll.objs"
-    if (-not (Test-Path -LiteralPath $objsFile)) {
-        throw "Objekt-Response-Datei fehlt: '$objsFile' (make fuer $LibBase gelaufen?)."
+    $tokens = @()
+    if (Test-Path -LiteralPath $objsFile) {
+        $raw = [System.IO.File]::ReadAllText($objsFile)
+        $tokens = @($raw -split '\s+' | Where-Object { $_ -match '\.o$' })
     }
-    $raw = [System.IO.File]::ReadAllText($objsFile)
-    # Tokens trennen (Whitespace/Zeilenenden); nur .o behalten.
-    $tokens = $raw -split '\s+' | Where-Object { $_ -match '\.o$' }
     if ($tokens.Count -eq 0) {
-        throw "Objekt-Response-Datei '$objsFile' enthaelt keine .o-Eintraege."
+        Write-Host "WARN: '$objsFile' fehlt/leer -- Fallback auf alle *.o in '$srcLibDir'."
+        $tokens = @(Get-ChildItem -LiteralPath $srcLibDir -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '\.o$' } |
+            ForEach-Object { Join-Path $libDirName $_.Name })  # relativ zum Quellbaum
+    }
+    if ($tokens.Count -eq 0) {
+        $listing = ((Get-ChildItem -LiteralPath $srcLibDir -File -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.Name }) -join ', ')
+        throw "Keine Objekte fuer '$LibBase' gefunden (weder '$objsFile' noch *.o in '$srcLibDir'). Inhalt: $listing"
     }
 
     # Objekte flach ins Stage kopieren; dabei den relativen Pfad als Dateiname
