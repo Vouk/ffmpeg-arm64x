@@ -57,6 +57,18 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# MSYS2-Login-Shell (bash -lc) MUSS die MSVC-Umgebung (PATH/INCLUDE/LIB aus
+# vcvarsamd64_arm64.bat) erben, sonst findet x264s configure 'cl' nicht
+# ("cl: command not found" -> "requires Visual Studio ... or newer"). Ohne
+# MSYS2_PATH_TYPE=inherit setzt die Login-Shell den PATH aus ihrem Profil neu
+# und wirft die vom VCVARS gesetzten Eintraege weg. Identisch zu build-ffmpeg.ps1.
+$env:MSYS2_PATH_TYPE = 'inherit'
+# MSYS2 wandelt Argumente, die wie POSIX-Pfade aussehen (fuehrender '/'), in
+# Windows-Pfade um. Der ARM64EC-Linker-Flag -MACHINE:arm64EC enthaelt kein '/',
+# ist also unkritisch; vorsorglich die ARM64EC-Schalter von der Konvertierung
+# ausnehmen, damit sie wortwoertlich an cl/lib/link durchkommen.
+$env:MSYS2_ARG_CONV_EXCL = '-MACHINE:arm64EC;-machine:arm64ec;-arm64EC'
+
 function ConvertTo-Msys2Path {
     [CmdletBinding()][OutputType([string])]
     param([Parameter(Mandatory)][string] $Path)
