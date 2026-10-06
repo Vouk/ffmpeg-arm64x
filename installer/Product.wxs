@@ -2,12 +2,14 @@
 <!--
   Product.wxs — WiX v3.x Produktdefinition fuer den ARM64X-FFmpeg-8-Installer.
 
-  Es wird ausschliesslich die LGPL-Variante gebaut (Shared Libraries, ohne
-  externe Encoder). Es entsteht genau EIN MSI.
+  Zwei Varianten, per Praeprozessor-Variable $(var.Variant) gewaehlt (GPL|LGPL):
+    * LGPL: ohne x264/x265 (mit AMF + NVENC/NVDEC).
+    * GPL : zusaetzlich x264/x265.
+  Der Installer wird je Variante einmal gebaut -> zwei MSI.
 
   Aufruf (Beispiel, in der CI-Paketierung):
-      candle Product.wxs FfmpegFiles.wxs -dBinSourceDir=<...> -ext WixUtilExtension
-      light  Product.wixobj FfmpegFiles.wixobj -o ffmpeg-8-lgpl-arm64x.msi -ext WixUIExtension -ext WixUtilExtension
+      candle Product.wxs FfmpegFiles.wxs -dVariant=GPL -dBinSourceDir=<...> -ext WixUtilExtension
+      light  Product.wixobj FfmpegFiles.wixobj -o ffmpeg-8-gpl-arm64x.msi -ext WixUIExtension -ext WixUtilExtension
 
   Voraussetzungen (Extensions):
     * WixUIExtension   — liefert WixUI_InstallDir inkl. scrollbarer Lizenzseite.
@@ -20,13 +22,27 @@
 
   <!--
     ==========================================================================
-    Produktkonstanten (LGPL). Der UpgradeCode ist fest (stabil ueber Versionen
-    hinweg), damit MajorUpgrade eine vorhandene Installation ersetzt.
+    Varianten-Weiche: $(var.Variant) MUSS beim candle-Aufruf gesetzt sein
+    (-dVariant=GPL bzw. -dVariant=LGPL). Daraus ProductName, UpgradeCode und
+    Lizenz-RTF. Die UpgradeCodes sind je Variante fest und VERSCHIEDEN, damit
+    GPL und LGPL als getrennte Produkte nebeneinander installierbar sind.
     ==========================================================================
   -->
-  <?define ProductName = "FFmpeg 8 (LGPL, ARM64X)" ?>
-  <?define UpgradeCode = "9A72F0E5-8B3C-4D61-A0F2-5C7D1E9B4028" ?>
-  <?define LicenseRtf  = "license\lgpl-3.0.rtf" ?>
+  <?ifndef Variant ?>
+    <?error Die Praeprozessor-Variable 'Variant' muss gesetzt sein: -dVariant=GPL oder -dVariant=LGPL ?>
+  <?endif?>
+
+  <?if $(var.Variant) = GPL ?>
+    <?define ProductName = "FFmpeg 8 (GPL, ARM64X)" ?>
+    <?define UpgradeCode = "6E3B4C2A-1D5F-4A7B-9C10-2F8E6A0B3D41" ?>
+    <?define LicenseRtf  = "license\gpl-3.0.rtf" ?>
+  <?elseif $(var.Variant) = LGPL ?>
+    <?define ProductName = "FFmpeg 8 (LGPL, ARM64X)" ?>
+    <?define UpgradeCode = "9A72F0E5-8B3C-4D61-A0F2-5C7D1E9B4028" ?>
+    <?define LicenseRtf  = "license\lgpl-3.0.rtf" ?>
+  <?else?>
+    <?error Unbekannte Variant '$(var.Variant)'. Erlaubt sind GPL oder LGPL. ?>
+  <?endif?>
 
   <!--
     Anzeigeversion der MSI/Artefakte. Von der CI ueberschreibbar via
@@ -61,7 +77,7 @@
              Compressed="yes"
              InstallScope="perMachine"
              Platform="x64"
-             Description="FFmpeg 8 (LGPL) als ARM64X-Hybrid" />
+             Description="FFmpeg 8 ($(var.Variant)) als ARM64X-Hybrid" />
 
     <MajorUpgrade DowngradeErrorMessage="Eine neuere Version von $(var.ProductName) ist bereits installiert."
                   AllowSameVersionUpgrades="yes"
@@ -117,7 +133,7 @@
     </Directory>
 
     <Feature Id="MainFeature"
-             Title="FFmpeg 8 (LGPL)"
+             Title="FFmpeg 8 ($(var.Variant))"
              Level="1"
              ConfigurableDirectory="INSTALLDIR"
              Absent="disallow"
@@ -252,7 +268,7 @@
       Die Zustimmung ist jedoch NICHT mehr erzwungen: LicenseAccepted ist per
       Default "1" (siehe oben), daher ist "Weiter" sofort aktiv und der Nutzer
       muss die Lizenz nicht aktiv bestaetigen. Der Lizenztext bleibt sichtbar
-      (informativ). WixUILicenseRtf waehlt die LGPL-RTF.
+      (informativ). WixUILicenseRtf waehlt die variantenspezifische RTF.
       ======================================================================
     -->
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
@@ -273,7 +289,7 @@
     <DirectoryRef Id="BINDIR">
       <Component Id="PathEnvMarker" Guid="C1D2E3F4-5A6B-4C7D-8E9F-0A1B2C3D4E5F">
         <RegistryValue Root="HKLM"
-                       Key="SOFTWARE\ARM64X-FFmpeg-Build\LGPL"
+                       Key="SOFTWARE\ARM64X-FFmpeg-Build\$(var.Variant)"
                        Name="Installed"
                        Type="integer"
                        Value="1"

@@ -2,8 +2,9 @@
     Unit-/Beispieltests für die reine, statische config.h-Pruefung von
     scripts/verify-capabilities.ps1.
 
-    Es wird die LGPL-Variante gebaut: OHNE GPL-Encoder (libx264/libx265), aber
-    MIT den Hardware-Encodern AMF (AMD) und NVENC/NVDEC (NVIDIA). Die echte
+    Es werden ZWEI Varianten gebaut: LGPL (OHNE GPL-Encoder libx264/libx265)
+    und GPL (MIT libx264/libx265). BEIDE enthalten die Hardware-Encoder AMF
+    (AMD) und NVENC/NVDEC (NVIDIA). Die echte
     ffmpeg.exe existiert nur auf dem CI-Runner (und ist ARM64, also auf dem
     x64-Runner nicht ausfuehrbar); deshalb pruefen wir statisch aus FFmpegs
     config.h.
@@ -100,5 +101,51 @@ Describe 'Test-FFmpegConfigCapabilities (statisch, LGPL mit AMF + NVENC/NVDEC)' 
         $r = Test-FFmpegConfigCapabilities -ConfigText $cfg
         $r.Success | Should -BeFalse
         ($r.Violations -join ' ') | Should -Match 'NVDEC/CUDA'
+    }
+}
+
+Describe 'Test-FFmpegConfigCapabilities (statisch, GPL mit x264/x265 + AMF + NVENC/NVDEC)' {
+    BeforeAll {
+        # GPL-Build: libx264 + libx265 ERFORDERLICH, zusaetzlich AMF + NVENC/NVDEC.
+        $script:CfgGplOk = @'
+#define CONFIG_LIBX264_ENCODER 1
+#define CONFIG_LIBX265_ENCODER 1
+#define CONFIG_H264_AMF_ENCODER 1
+#define CONFIG_HEVC_AMF_ENCODER 1
+#define CONFIG_H264_NVENC_ENCODER 1
+#define CONFIG_HEVC_NVENC_ENCODER 1
+#define CONFIG_CUDA 1
+#define CONFIG_NVDEC 1
+#define CONFIG_AAC_ENCODER 1
+'@
+    }
+
+    It 'besteht fuer einen GPL-Build mit x264/x265 + AMF + NVENC/NVDEC' {
+        $r = Test-FFmpegConfigCapabilities -ConfigText $script:CfgGplOk -Variant gpl
+        $r.Success | Should -BeTrue -Because $r.Message
+        $r.Variant | Should -Be 'gpl'
+        $r.Violations.Count | Should -Be 0
+    }
+
+    It 'schlaegt fehl, wenn libx264 im GPL-Build fehlt' {
+        $cfg = $script:CfgGplOk -replace '#define CONFIG_LIBX264_ENCODER 1', '#define CONFIG_LIBX264_ENCODER 0'
+        $r = Test-FFmpegConfigCapabilities -ConfigText $cfg -Variant gpl
+        $r.Success | Should -BeFalse
+        ($r.Violations -join ' ') | Should -Match 'libx264'
+    }
+
+    It 'schlaegt fehl, wenn libx265 im GPL-Build fehlt' {
+        $cfg = $script:CfgGplOk -replace '#define CONFIG_LIBX265_ENCODER 1', '#define CONFIG_LIBX265_ENCODER 0'
+        $r = Test-FFmpegConfigCapabilities -ConfigText $cfg -Variant gpl
+        $r.Success | Should -BeFalse
+        ($r.Violations -join ' ') | Should -Match 'libx265'
+    }
+
+    It 'verlangt auch im GPL-Build die Hardware-Encoder (AMF)' {
+        $cfg = $script:CfgGplOk -replace '#define CONFIG_H264_AMF_ENCODER 1', '#define CONFIG_H264_AMF_ENCODER 0' `
+                                -replace '#define CONFIG_HEVC_AMF_ENCODER 1', '#define CONFIG_HEVC_AMF_ENCODER 0'
+        $r = Test-FFmpegConfigCapabilities -ConfigText $cfg -Variant gpl
+        $r.Success | Should -BeFalse
+        ($r.Violations -join ' ') | Should -Match 'AMF'
     }
 }

@@ -21,6 +21,24 @@ BeforeAll {
         & $script:BuildFFmpeg -Arch $Arch -SourceDir (Join-Path $root "src") `
             -OutputDir (Join-Path $root "out") -HwHeadersDir $hw -DryRun 6>$null
     }
+
+    function New-GplPlan {
+        param([string] $Arch = "arm64")
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString("N").Substring(0, 8))
+        $hw = Join-Path $root "hwheaders"
+        New-Item -ItemType Directory -Force -Path (Join-Path $hw "include") | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $hw "lib/pkgconfig") | Out-Null
+        # build-ffmpeg.ps1 (GPL) bricht ab, wenn <DepsDir>\<codec>\<arch> fehlt.
+        # Fuer die reine Plan-Zusammensetzung genuegen die Verzeichnisse (die
+        # Libs selbst werden erst beim echten Link gebraucht).
+        $deps = Join-Path $root "deps"
+        foreach ($codec in @("x264", "x265")) {
+            New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path (Join-Path $deps $codec) $Arch) "include") | Out-Null
+            New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path (Join-Path $deps $codec) $Arch) "lib/pkgconfig") | Out-Null
+        }
+        & $script:BuildFFmpeg -Arch $Arch -Variant gpl -SourceDir (Join-Path $root "src") `
+            -OutputDir (Join-Path $root "out") -HwHeadersDir $hw -DepsDir $deps -DryRun 6>$null
+    }
 }
 
 Describe "build-ffmpeg: configure-Flags (LGPL, Shared, HW-Encoder)" {
@@ -42,6 +60,41 @@ Describe "build-ffmpeg: configure-Flags (LGPL, Shared, HW-Encoder)" {
         $args | Should -Match "--enable-amf"
         $args | Should -Match "--enable-nvenc"
         $args | Should -Match "--enable-nvdec"
+    }
+}
+
+Describe "build-ffmpeg: configure-Flags (GPL, mit x264/x265 + HW-Encoder)" {
+    It "aktiviert GPL und die Encoder libx264 + libx265" {
+        $args = (New-GplPlan).ConfigureArgs -join " "
+        $args | Should -Match "--enable-gpl"
+        $args | Should -Match "--enable-libx264"
+        $args | Should -Match "--enable-libx265"
+    }
+
+    It "aktiviert weiterhin die Hardware-Encoder AMF + NVENC/NVDEC" {
+        $args = (New-GplPlan).ConfigureArgs -join " "
+        $args | Should -Match "--enable-amf"
+        $args | Should -Match "--enable-nvenc"
+        $args | Should -Match "--enable-nvdec"
+    }
+
+    It "reicht include- und lib-Pfade der x264/x265-Deps weiter" {
+        $args = (New-GplPlan).ConfigureArgs -join " "
+        $args | Should -Match "x264/arm64/include"
+        $args | Should -Match "x265/arm64/include"
+        $args | Should -Match "LIBPATH:\S*x264/arm64/lib"
+        $args | Should -Match "LIBPATH:\S*x265/arm64/lib"
+    }
+
+    It "bricht ab, wenn die x264/x265-Deps fuer die Arch fehlen" {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString("N").Substring(0, 8))
+        $hw = Join-Path $root "hwheaders"
+        New-Item -ItemType Directory -Force -Path $hw | Out-Null
+        $deps = Join-Path $root "deps-empty"
+        New-Item -ItemType Directory -Force -Path $deps | Out-Null
+        { & $script:BuildFFmpeg -Arch arm64 -Variant gpl -SourceDir (Join-Path $root "src") `
+            -OutputDir (Join-Path $root "out") -HwHeadersDir $hw -DepsDir $deps -DryRun 6>$null } |
+            Should -Throw -ExpectedMessage "*x264-Deps*"
     }
 }
 

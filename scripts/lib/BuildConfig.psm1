@@ -9,13 +9,15 @@
     Build-Schritt (siehe scripts/build-ffmpeg.ps1) an FFmpegs `configure`
     weiterreicht.
 
-    Es wird AUSSCHLIESSLICH die LGPL-Variante gebaut, als Shared Libraries
-    (DLL + Import-.lib) und OHNE GPL-Komponenten (kein --enable-gpl, kein
-    libx264/libx265). Die Hardware-Encoder AMF (AMD) und NVENC/NVDEC (NVIDIA)
-    sind eingebunden -- sie sind header-only SDK-Integrationen, die zur Laufzeit
-    geladen werden und LGPL-vertraeglich sind.
+    Es werden ZWEI Varianten unterstuetzt, beide als Shared Libraries
+    (DLL + Import-.lib), beide mit den Hardware-Encodern AMF (AMD) und
+    NVENC/NVDEC (NVIDIA):
+      * LGPL (Default): OHNE GPL-Komponenten (kein --enable-gpl, kein
+        libx264/libx265).
+      * GPL: zusaetzlich --enable-gpl --enable-libx264 --enable-libx265
+        (x264/x265 werden von build-deps.ps1 statisch gebaut und eingelinkt).
 
-    Zusammensetzung:
+    Gemeinsame Zusammensetzung:
         --toolchain=msvc --target-os=win32
         --enable-cross-compile --pkg-config-flags=--static
         --disable-asm --disable-filter=gfxcapture
@@ -26,6 +28,8 @@
         --enable-nvenc --enable-nvdec   (nv-codec-headers)
         fuer arm64ec zusaetzlich:
           --extra-cflags=-arm64EC --extra-ldflags=-machine:arm64ec
+    Nur GPL zusaetzlich:
+          --enable-gpl --enable-libx264 --enable-libx265
 #>
 
 Set-StrictMode -Version Latest
@@ -33,32 +37,41 @@ Set-StrictMode -Version Latest
 function Get-ConfigureFlags {
     <#
     .SYNOPSIS
-        Liefert die FFmpeg-`configure`-Flags fuer eine Architektur (LGPL).
+        Liefert die FFmpeg-`configure`-Flags fuer eine (Variante, Architektur).
 
     .PARAMETER Arch
         Ziel-Architektur: 'arm64' oder 'arm64ec' (case-insensitiv). Bestimmt die
         ARM64EC-Compiler-/Linker-Flags.
 
+    .PARAMETER Variant
+        'lgpl' (Default) oder 'gpl' (case-insensitiv). GPL ergaenzt
+        --enable-gpl/--enable-libx264/--enable-libx265.
+
     .OUTPUTS
         [string[]] Die Liste der `configure`-Flags. Enthaelt immer
         `--enable-shared --disable-static` sowie `--enable-amf`,
-        `--enable-nvenc`, `--enable-nvdec` und NIE `--enable-gpl`,
-        `--enable-libx264` oder `--enable-libx265`.
+        `--enable-nvenc`, `--enable-nvdec`. Die GPL-Flags erscheinen NUR bei
+        -Variant gpl.
 
     .EXAMPLE
         Get-ConfigureFlags -Arch arm64
     .EXAMPLE
-        Get-ConfigureFlags -Arch arm64ec
+        Get-ConfigureFlags -Arch arm64ec -Variant gpl
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
         [Parameter(Mandatory)]
         [ValidateSet('arm64', 'arm64ec', IgnoreCase = $true)]
-        [string] $Arch
+        [string] $Arch,
+
+        [Parameter()]
+        [ValidateSet('lgpl', 'gpl', IgnoreCase = $true)]
+        [string] $Variant = 'lgpl'
     )
 
     $archKey = $Arch.ToLowerInvariant()
+    $variantKey = $Variant.ToLowerInvariant()
 
     # Flags (LGPL, Shared, HW-Encoder AMF+NVENC/NVDEC). Reihenfolge deterministisch.
     $flags = [System.Collections.Generic.List[string]]::new()
@@ -103,10 +116,17 @@ function Get-ConfigureFlags {
         $flags.Add('--extra-ldflags=-machine:arm64ec')
     }
 
-    # Hardware-Encoder (LGPL-vertraeglich, header-only SDK-Integrationen).
+    # Hardware-Encoder (beide Varianten; header-only SDK-Integrationen).
     $flags.Add('--enable-amf')       # AMD AMF (AMF-Header)
     $flags.Add('--enable-nvenc')     # NVIDIA NVENC (nv-codec-headers)
     $flags.Add('--enable-nvdec')     # NVIDIA NVDEC (nv-codec-headers)
+
+    # Nur GPL: externe Encoder x264/x265 (statisch von build-deps.ps1 gebaut).
+    if ($variantKey -eq 'gpl') {
+        $flags.Add('--enable-gpl')
+        $flags.Add('--enable-libx264')
+        $flags.Add('--enable-libx265')
+    }
 
     # Als string[] zurueckgeben (nicht als einzelne Pipeline-Elemente, damit der
     # Aufrufer eine stabile Array-Semantik erhaelt).

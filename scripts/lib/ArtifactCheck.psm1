@@ -220,34 +220,34 @@ Export-ModuleMember -Function Test-DllLibPairing, Get-CoreLibs
 
 # region Test-MsiCount
 
-# Erwartete Anzahl erzeugter MSI-Installer: genau einer (nur LGPL).
-$script:ExpectedMsiCount = 1
+# Erwartete Anzahl erzeugter MSI-Installer: genau zwei (GPL + LGPL).
+$script:ExpectedMsiCount = 2
 
 function Test-MsiCount {
     <#
     .SYNOPSIS
-        Prüft, dass genau ein MSI-Installer erzeugt wurde (nur LGPL-Variante).
+        Prüft, dass genau zwei MSI-Installer erzeugt wurden (GPL + LGPL).
     .DESCRIPTION
         Reine Logik ohne Dateisystemzugriff. Der Aufrufer ermittelt die Anzahl
         der erzeugten MSI-Installer (z. B. per Datei-Enumeration) und reicht sie
-        als Zählwert hinein. Erfolg genau dann, wenn die Anzahl == 1 ist. Bei
+        als Zählwert hinein. Erfolg genau dann, wenn die Anzahl == 2 ist. Bei
         jeder Abweichung (weniger oder mehr) meldet die Funktion einen Fehler
-        und benennt sowohl die erwartete (1) als auch die tatsächliche Anzahl.
+        und benennt sowohl die erwartete (2) als auch die tatsächliche Anzahl.
     .PARAMETER Count
         Tatsächlich erzeugte Anzahl an MSI-Installern. Muss >= 0 sein.
     .OUTPUTS
         PSCustomObject mit:
-          Success  [bool] — genau dann $true, wenn Count == 1
-          Expected [int]  — erwartete Anzahl (immer 1)
+          Success  [bool] — genau dann $true, wenn Count == 2
+          Expected [int]  — erwartete Anzahl (immer 2)
           Actual   [int]  — übergebene tatsächliche Anzahl
           Message  [string] — menschenlesbare Zusammenfassung; bei Abweichung
                               werden erwartete und tatsächliche Anzahl benannt
     .EXAMPLE
-        Test-MsiCount -Count 1
+        Test-MsiCount -Count 2
         # Success = $true
     .EXAMPLE
-        Test-MsiCount -Count 2
-        # Success = $false; Message benennt erwartet 1 / tatsächlich 2
+        Test-MsiCount -Count 1
+        # Success = $false; Message benennt erwartet 2 / tatsächlich 1
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]

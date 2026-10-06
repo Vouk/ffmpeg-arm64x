@@ -127,6 +127,21 @@ function Convert-StemFromKey {
     return ($Key -replace '-\d+$', '')
 }
 
+# Win32-System-Import-Libs (SDK) -- werden per NAME ueber $script:SysLibs
+# gereicht (ARM64X waehlt je Seite die passende Variante). Daher NICHT
+# zusaetzlich per vollem Pfad aus der rsp einbringen (sonst ABI-Mismatch, weil
+# die rsp eine arch-spezifische SDK-Variante nennt).
+$script:SystemImportLibNames = @(
+    'bcrypt','user32','ole32','oleaut32','advapi32','ws2_32','secur32',
+    'mfplat','mfuuid','strmiids','uuid','gdi32','kernel32','mfuuid',
+    'shell32','shlwapi','d3d11','dxgi','d3d9','vfw32','psapi','ole32'
+)
+function Test-IsSystemImportLib {
+    param([Parameter(Mandatory)][string] $Path)
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($Path).ToLowerInvariant()
+    return ($script:SystemImportLibNames -contains $base)
+}
+
 function Resolve-LibKey {
     <#
     .SYNOPSIS
@@ -189,8 +204,23 @@ function Invoke-MergeOne {
         if (-not (Test-Path -LiteralPath $o)) { throw "Objekt aus rsp fehlt (nicht mehr auf Platte): '$o'." }
     }
 
-    # Externe (nicht-FFmpeg) Import-Libs aus der EC-rsp (vollstaendiger Satz).
-    $extLibs = @($ec.Libs | Where-Object { -not (Test-IsFFmpegOwnLib -Path $_) } | Sort-Object -Unique)
+    # Externe (nicht-FFmpeg) Import-/Archiv-Libs aus BEIDEN rsp-Dateien.
+    # WICHTIG fuer statische Archiv-Libs mit ABI-spezifischem Code (x264/x265):
+    # die arm64-Variante traegt ARM64-Objekte, die arm64ec-Variante
+    # ARM64EC-Objekte. Fuer den /machine:arm64x-Link MUSS BEIDES eingehen,
+    # damit die nativen ARM64-Referenzen gegen das arm64-Archiv und die
+    # EC-Referenzen gegen das arm64ec-Archiv aufgeloest werden. Die Pfade
+    # unterscheiden sich (\x264\arm64\lib vs \x264\arm64ec\lib), daher einfach
+    # beide vollen Pfade uebergeben; der Linker nutzt je Seite das passende.
+    # System-Import-Libs (bcrypt, user32, ...) kommen separat ueber $SysLibs
+    # per Name (ARM64X loest die passende SDK-Variante je Seite auf), daher
+    # hier NICHT per Pfad doppeln.
+    $extLibs = @(
+        @($nat.Libs) + @($ec.Libs) |
+            Where-Object { -not (Test-IsFFmpegOwnLib -Path $_) } |
+            Where-Object { -not (Test-IsSystemImportLib -Path $_) } |
+            Sort-Object -Unique
+    )
     foreach ($l in $extLibs) { if (-not (Test-Path -LiteralPath $l)) { throw "Externe Lib aus rsp fehlt: '$l'." } }
 
     $outDll = Join-Path $OutputDir "$Key.dll"

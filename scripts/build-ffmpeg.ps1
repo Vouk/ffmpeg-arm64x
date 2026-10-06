@@ -95,6 +95,18 @@ param(
     [Parameter()]
     [string] $HwHeadersDir,
 
+    # Lizenz-Variante: 'lgpl' (Default) oder 'gpl'. GPL zieht x264/x265 ueber
+    # Get-ConfigureFlags und -DepsDir herein.
+    [Parameter()]
+    [ValidateSet('lgpl', 'gpl', IgnoreCase = $true)]
+    [string] $Variant = 'lgpl',
+
+    # Nur GPL: Wurzel der statisch gebauten x264/x265 (von build-deps.ps1),
+    # Layout <DepsDir>\<codec>\<arch>\{include,lib,lib\pkgconfig}. configure
+    # bekommt daraus -I/-LIBPATH und PKG_CONFIG_PATH fuer die aktuelle Arch.
+    [Parameter()]
+    [string] $DepsDir,
+
     # MERGED-ARM64X-Modus: Wenn gesetzt, laeuft die Capture-Variante fuer den
     # True-Merge (scripts/merge-arm64x-merged.ps1) statt des Forwarder-Builds:
     #   * configure bekommt /LINKREPROFULLPATHRSP (link.exe schreibt die EXAKTEN
@@ -198,13 +210,16 @@ function Get-FFmpegBuildPlan {
         [Parameter(Mandatory)][int] $Jobs,
         [string] $HwHeadersDir,
         [string] $LinkReproDir,
-        [string] $PkgConfig = '/usr/bin/pkgconf'
+        [string] $PkgConfig = '',
+        [string] $Variant = 'lgpl',
+        [string] $DepsDir
     )
 
     $archKey = $Arch.ToLowerInvariant()
+    $variantKey = $Variant.ToLowerInvariant()
 
-    # Architektur-Flags aus dem Reinlogik-Modul (LGPL, Shared, HW-Encoder).
-    $configureFlags = Get-ConfigureFlags -Arch $archKey
+    # Varianten-/Architektur-Flags aus dem Reinlogik-Modul.
+    $configureFlags = Get-ConfigureFlags -Arch $archKey -Variant $variantKey
 
     # Arch-spezifischer Installations-Prefix, kollisionsfrei je Durchlauf der
     # Build-Matrix.
@@ -248,6 +263,27 @@ function Get-FFmpegBuildPlan {
         $hwPcDir = Join-Path (Join-Path $HwHeadersDir 'lib') 'pkgconfig'
         if (Test-Path -LiteralPath $hwPcDir) {
             $pkgConfigDirs.Add((ConvertTo-Msys2Path -Path $hwPcDir))
+        }
+    }
+
+    # Nur GPL: statische x264/x265 (von build-deps.ps1 je Arch gebaut).
+    # Je Codec include-Pfad (-I) und lib-Pfad (-LIBPATH) hineinreichen und das
+    # pkgconfig-Verzeichnis fuer PKG_CONFIG_PATH sammeln. FFmpegs configure
+    # findet libx264/libx265 ueber pkg-config (x264.pc/x265.pc) bzw. die
+    # -lx264/-lx265-Linktests.
+    if ($variantKey -eq 'gpl' -and $DepsDir -and (Test-Path -LiteralPath $DepsDir)) {
+        foreach ($codec in @('x264', 'x265')) {
+            $codecRoot = Join-Path (Join-Path $DepsDir $codec) $archKey
+            if (-not (Test-Path -LiteralPath $codecRoot)) {
+                throw "GPL: erwartete $codec-Deps fuer '$archKey' fehlen: '$codecRoot' (build-deps.ps1 gelaufen?)."
+            }
+            $incPosix = ConvertTo-Msys2Path -Path (Join-Path $codecRoot 'include')
+            $libWin   = Join-Path $codecRoot 'lib'
+            $libPosix = ConvertTo-Msys2Path -Path $libWin
+            $configureArgs.Add("--extra-cflags=-I$incPosix")
+            $configureArgs.Add("--extra-ldflags=-LIBPATH:$libPosix")
+            $pcDir = Join-Path $libWin 'pkgconfig'
+            if (Test-Path -LiteralPath $pcDir) { $pkgConfigDirs.Add((ConvertTo-Msys2Path -Path $pcDir)) }
         }
     }
 
@@ -407,6 +443,7 @@ function Get-FFmpegBuildPlan {
         Env            = $envVars
         Merged         = (-not [string]::IsNullOrWhiteSpace($LinkReproDir))
         LinkReproDir   = $LinkReproDir
+        Variant        = $variantKey
     }
 }
 
@@ -422,14 +459,16 @@ $plan = Get-FFmpegBuildPlan `
     -Jobs $Jobs `
     -HwHeadersDir $HwHeadersDir `
     -LinkReproDir $LinkReproDir `
-    -PkgConfig $PkgConfig
+    -PkgConfig $PkgConfig `
+    -Variant $Variant `
+    -DepsDir $DepsDir
 
 Write-Verbose "FFmpeg-Build-Plan: Arch=$($plan.Arch) Prefix=$($plan.Prefix)"
 
 if ($DryRun) {
     # Lokale Verifikation: Nur den zusammengesetzten Aufruf ausgeben, nichts
     # ausführen. Gibt das Plan-Objekt zurück, damit Tests es inspizieren können.
-    Write-Host "== DRY RUN: FFmpeg (LGPL)/$($plan.Arch) =="
+    Write-Host "== DRY RUN: FFmpeg ($($plan.Variant))/$($plan.Arch) =="
     Write-Host "MSYS2 bash : $($plan.Msys2Bash)"
     Write-Host "Env        : $(( $plan.Env.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; ')"
     Write-Host "Source     : $($plan.SourceDirPosix)"
@@ -470,7 +509,7 @@ foreach ($kv in $plan.Env.GetEnumerator()) {
     Set-Item -Path ("Env:" + $kv.Key) -Value $kv.Value
 }
 
-Write-Host "Baue FFmpeg (LGPL)/$($plan.Arch) unter MSYS2 ..."
+Write-Host "Baue FFmpeg ($($plan.Variant))/$($plan.Arch) unter MSYS2 ..."
 & $plan.Msys2Bash '-lc' $plan.BashScript
 if ($LASTEXITCODE -ne 0) {
     # Bei configure-/Build-Fehler FFmpegs config.log ausgeben -- dort steht
@@ -481,7 +520,7 @@ if ($LASTEXITCODE -ne 0) {
         Get-Content -LiteralPath $ffCfgLog -Tail 120 | ForEach-Object { Write-Host $_ }
         Write-Host '---------------------------------------------------------'
     }
-    throw "FFmpeg-Build fehlgeschlagen (LGPL/$($plan.Arch)): bash-Exit-Code $LASTEXITCODE."
+    throw "FFmpeg-Build fehlgeschlagen ($($plan.Variant)/$($plan.Arch)): bash-Exit-Code $LASTEXITCODE."
 }
 
 # Sanity-Check: ffmpeg.exe/ffprobe.exe. Im Forwarder-Build installiert

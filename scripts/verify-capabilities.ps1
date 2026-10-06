@@ -41,7 +41,13 @@ param(
     # Pfad zu FFmpegs config.h (statische Faehigkeitspruefung). ARM64-ffmpeg.exe
     # laeuft nicht auf dem x64-Runner, daher der statische Weg.
     [Parameter()]
-    [string] $ConfigPath
+    [string] $ConfigPath,
+
+    # Lizenz-Variante: 'lgpl' (Default) verbietet libx264/libx265; 'gpl'
+    # verlangt sie. Beide verlangen AMF + NVENC/NVDEC.
+    [Parameter()]
+    [ValidateSet('lgpl', 'gpl', IgnoreCase = $true)]
+    [string] $Variant = 'lgpl'
 )
 
 Set-StrictMode -Version Latest
@@ -85,40 +91,45 @@ function Get-FFmpegConfigFlags {
 function Test-FFmpegConfigCapabilities {
     <#
     .SYNOPSIS
-        Statische Faehigkeitspruefung des LGPL-Builds (mit HW-Encodern) anhand
-        von FFmpegs config.h (reine Logik, kein ffmpeg-Aufruf).
+        Statische Faehigkeitspruefung je Variante (mit HW-Encodern) anhand von
+        FFmpegs config.h (reine Logik, kein ffmpeg-Aufruf).
     .DESCRIPTION
         ARM64-ffmpeg.exe laeuft nicht auf dem x64-Runner; deshalb wird statt
         der Laufzeitausgabe die Build-Konfiguration geprueft:
-          * CONFIG_LIBX264_ENCODER / CONFIG_LIBX265_ENCODER duerfen NICHT
-            vorhanden sein (GPL-Encoder, LGPL-Build).
-          * mind. ein *_AMF_ENCODER MUSS vorhanden sein (z. B. h264_amf).
-          * mind. ein *_NVENC_ENCODER MUSS vorhanden sein (z. B. h264_nvenc).
-          * CONFIG_CUDA oder CONFIG_NVDEC MUSS vorhanden sein (NVIDIA-
-            Hardware-Beschleunigung).
+          * LGPL: CONFIG_LIBX264_ENCODER / CONFIG_LIBX265_ENCODER duerfen NICHT
+            vorhanden sein.
+          * GPL : CONFIG_LIBX264_ENCODER UND CONFIG_LIBX265_ENCODER MUESSEN
+            vorhanden sein.
+          * beide: mind. ein *_AMF_ENCODER (z. B. h264_amf), mind. ein
+            *_NVENC_ENCODER (z. B. h264_nvenc) und CONFIG_CUDA/CONFIG_NVDEC.
     .OUTPUTS
-        PSCustomObject (Success, Violations, Message).
+        PSCustomObject (Success, Variant, Violations, Message).
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
-        [Parameter(Mandatory)][AllowEmptyString()][string] $ConfigText
+        [Parameter(Mandatory)][AllowEmptyString()][string] $ConfigText,
+        [Parameter()][ValidateSet('lgpl','gpl',IgnoreCase=$true)][string] $Variant = 'lgpl'
     )
 
+    $variantKey = $Variant.ToLowerInvariant()
     $flagItems = @(Get-FFmpegConfigFlags -ConfigText $ConfigText)
     $flags = [System.Collections.Generic.HashSet[string]]::new(
         [string[]]$flagItems, [System.StringComparer]::OrdinalIgnoreCase)
     $violations = [System.Collections.Generic.List[string]]::new()
 
-    # --- GPL-Encoder duerfen NICHT vorhanden sein ---------------------------
-    if ($flags.Contains('libx264_encoder')) {
-        $violations.Add("Unerwarteter GPL-Encoder 'libx264' im LGPL-Build.")
-    }
-    if ($flags.Contains('libx265_encoder')) {
-        $violations.Add("Unerwarteter GPL-Encoder 'libx265' im LGPL-Build.")
+    # --- GPL-Encoder: je Variante erforderlich bzw. verboten ----------------
+    $hasX264 = $flags.Contains('libx264_encoder')
+    $hasX265 = $flags.Contains('libx265_encoder')
+    if ($variantKey -eq 'gpl') {
+        if (-not $hasX264) { $violations.Add("Fehlender GPL-Encoder 'libx264' im GPL-Build.") }
+        if (-not $hasX265) { $violations.Add("Fehlender GPL-Encoder 'libx265' im GPL-Build.") }
+    } else {
+        if ($hasX264) { $violations.Add("Unerwarteter GPL-Encoder 'libx264' im LGPL-Build.") }
+        if ($hasX265) { $violations.Add("Unerwarteter GPL-Encoder 'libx265' im LGPL-Build.") }
     }
 
-    # --- Hardware-Encoder MUESSEN vorhanden sein ----------------------------
+    # --- Hardware-Encoder MUESSEN vorhanden sein (beide Varianten) ----------
     $amf = @($flagItems | Where-Object { $_ -match '(?i)_amf_encoder$' })
     if ($amf.Count -eq 0) {
         $violations.Add("Fehlende AMF-Hardware-Encoder in config.h (erwartet z. B. 'h264_amf').")
@@ -134,12 +145,14 @@ function Test-FFmpegConfigCapabilities {
 
     $success = ($violations.Count -eq 0)
     $message = if ($success) {
-        "Statische Faehigkeitspruefung (config.h) bestanden: LGPL-Build ohne GPL-Encoder, mit AMF + NVENC/NVDEC."
+        "Statische Faehigkeitspruefung (config.h) bestanden: $variantKey-Build mit AMF + NVENC/NVDEC" +
+        $(if ($variantKey -eq 'gpl') { ' und libx264/libx265.' } else { ', ohne GPL-Encoder.' })
     } else {
-        "Statische Faehigkeitspruefung (config.h) fehlgeschlagen: " + ($violations -join ' ')
+        "Statische Faehigkeitspruefung (config.h, $variantKey) fehlgeschlagen: " + ($violations -join ' ')
     }
     return [pscustomobject]@{
         Success    = $success
+        Variant    = $variantKey
         Violations = [string[]]$violations.ToArray()
         Message    = $message
     }
@@ -180,8 +193,8 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
     }
     $configText = ($configFiles | ForEach-Object { [System.IO.File]::ReadAllText($_) }) -join "`n"
-    Write-Host ("Statische Pruefung aus: " + ($configFiles -join ', '))
-    $result = Test-FFmpegConfigCapabilities -ConfigText $configText
+    Write-Host ("Statische Pruefung ($Variant) aus: " + ($configFiles -join ', '))
+    $result = Test-FFmpegConfigCapabilities -ConfigText $configText -Variant $Variant
 
     Write-Host $result.Message
 
