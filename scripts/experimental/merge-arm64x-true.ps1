@@ -313,7 +313,6 @@ function Invoke-Merge {
         'advapi32.lib'
         'ws2_32.lib'      # Sockets (avformat)
         'secur32.lib'     # TLS (avformat)
-        'bcryptprimitives.lib'
         'mfplat.lib'      # Media Foundation (avcodec mf*)
         'mfuuid.lib'
         'strmiids.lib'    # DirectShow GUIDs (avdevice)
