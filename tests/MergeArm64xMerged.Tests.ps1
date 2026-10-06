@@ -55,6 +55,25 @@ Describe 'Test-IsFFmpegOwnLib' {
     }
 }
 
+Describe 'Test-IsSystemImportLib' {
+    It 'erkennt SDK-System-Import-Libs (nach Basisname, pfad-/case-unabhaengig)' {
+        Test-IsSystemImportLib -Path 'C:\WindowsKits\10\lib\arm64\user32.lib' | Should -BeTrue
+        Test-IsSystemImportLib -Path 'C:\sdk\BCRYPT.LIB' | Should -BeTrue
+    }
+    It 'erkennt avdevice-System-Libs shlwapi + vfw32 (Regression)' {
+        # avdevice (dshow/vfwcap) braucht SHCreateStreamOnFileA (shlwapi) und
+        # capCreateCaptureWindowA/capGetDriverDescriptionA (vfw32). Fehlen diese
+        # Namen in $SystemImportLibNames, werden sie aus $extLibs entfernt UND
+        # nicht ueber $SysLibs wieder eingebracht -> LNK2019 beim avdevice-Merge.
+        Test-IsSystemImportLib -Path 'C:\sdk\shlwapi.lib' | Should -BeTrue
+        Test-IsSystemImportLib -Path 'C:\sdk\vfw32.lib'   | Should -BeTrue
+    }
+    It 'behandelt externe Nicht-System-Libs (x264/x265) NICHT als System-Lib' {
+        Test-IsSystemImportLib -Path 'C:\deps\x264\arm64\lib\x264.lib' | Should -BeFalse
+        Test-IsSystemImportLib -Path 'C:\deps\x265\arm64ec\lib\x265.lib' | Should -BeFalse
+    }
+}
+
 Describe 'Convert-StemFromKey' {
     It 'entfernt die Versionsnummer' {
         Convert-StemFromKey -Key 'avcodec-62' | Should -Be 'avcodec'

@@ -131,11 +131,20 @@ function Convert-StemFromKey {
 # gereicht (ARM64X waehlt je Seite die passende Variante). Daher NICHT
 # zusaetzlich per vollem Pfad aus der rsp einbringen (sonst ABI-Mismatch, weil
 # die rsp eine arch-spezifische SDK-Variante nennt).
+#
+# WICHTIG: Diese Liste MUSS JEDE System-Lib enthalten, die irgendeine der
+# Kern-Libs beim Link braucht -- denn Namen aus dieser Liste werden aus den
+# rsp-abgeleiteten $extLibs ENTFERNT (Test-IsSystemImportLib) und
+# ausschliesslich ueber $script:SysLibs (unten, als .lib) wieder eingebracht.
+# Fehlt eine hier, verschwindet sie komplett aus dem Link. avdevice z. B.
+# zieht shlwapi (SHCreateStreamOnFileA, dshow) und vfw32 (capCreateCaptureWindowA,
+# capGetDriverDescriptionA, vfwcap) -- beide MUESSEN enthalten sein.
 $script:SystemImportLibNames = @(
     'bcrypt','user32','ole32','oleaut32','advapi32','ws2_32','secur32',
-    'mfplat','mfuuid','strmiids','uuid','gdi32','kernel32','mfuuid',
-    'shell32','shlwapi','d3d11','dxgi','d3d9','vfw32','psapi','ole32'
-)
+    'mfplat','mfuuid','strmiids','uuid','gdi32','kernel32',
+    'shell32','shlwapi','d3d11','dxgi','d3d9','vfw32','psapi',
+    'dxguid','winmm','version','ntdll','crypt32'
+) | Sort-Object -Unique
 function Test-IsSystemImportLib {
     param([Parameter(Mandatory)][string] $Path)
     $base = [System.IO.Path]::GetFileNameWithoutExtension($Path).ToLowerInvariant()
@@ -156,14 +165,13 @@ function Resolve-LibKey {
     return ($rsp.Name -replace '\.arm64\.rsp$', '')
 }
 
-# Win32-System-Import-Libs (Superset ueber alle Kern-Libs). Nicht referenzierte
-# sind harmlos. Fuer /machine:arm64x waehlt der Linker je Seite die passende
-# ARM64/ARM64EC-Variante aus den SDK-LIB-Pfaden.
-$script:SysLibs = @(
-    'bcrypt.lib','user32.lib','ole32.lib','oleaut32.lib','advapi32.lib',
-    'ws2_32.lib','secur32.lib','mfplat.lib','mfuuid.lib','strmiids.lib',
-    'uuid.lib','gdi32.lib','kernel32.lib'
-)
+# Win32-System-Import-Libs (Superset ueber alle Kern-Libs), die beim
+# /machine:arm64x-Link per NAME uebergeben werden (der Linker waehlt je Seite
+# die passende ARM64/ARM64EC-Variante aus den SDK-LIB-Pfaden). Direkt aus
+# $script:SystemImportLibNames abgeleitet, damit die "aus $extLibs entfernt"-
+# Menge und die "per Name wieder eingebracht"-Menge NIE auseinanderlaufen
+# koennen. Nicht referenzierte Libs sind beim Link harmlos.
+$script:SysLibs = @($script:SystemImportLibNames | ForEach-Object { "$_.lib" })
 
 function Invoke-MergeOne {
     <#
