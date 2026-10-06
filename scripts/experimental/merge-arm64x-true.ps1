@@ -233,10 +233,24 @@ function Invoke-Merge {
 
     New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
-    $arm64Objs   = @(Get-ChildItem -LiteralPath (Join-Path $arm64Stage 'obj')   -Filter '*.o' -File | ForEach-Object FullName)
-    $arm64ecObjs = @(Get-ChildItem -LiteralPath (Join-Path $arm64ecStage 'obj') -Filter '*.o' -File | ForEach-Object FullName)
+    $arm64Objs   = @(Get-ChildItem -LiteralPath (Join-Path $arm64Stage 'obj')   -File | Where-Object { $_.Name -match '\.o$' } | ForEach-Object FullName)
+    $arm64ecObjs = @(Get-ChildItem -LiteralPath (Join-Path $arm64ecStage 'obj') -File | Where-Object { $_.Name -match '\.o$' } | ForEach-Object FullName)
     if ($arm64Objs.Count -eq 0 -or $arm64ecObjs.Count -eq 0) {
         throw "Objekte fehlen (arm64: $($arm64Objs.Count), arm64ec: $($arm64ecObjs.Count))."
+    }
+
+    # WICHTIG (CVT1100): FFmpeg kompiliert eine Windows-Versions-Ressource in
+    # <lib>res.o (WINDRES). Beide Ansichten enthalten dieselbe VERSION-Ressource.
+    # Gehen beide in EINEN /machine:arm64x-Link, lehnt cvtres das Duplikat ab
+    # ("duplicate resource type:VERSION" -> LNK1123). Die Ressource ist
+    # architekturneutrale Metadaten; sie darf nur EINMAL vorkommen. Daher das
+    # Ressourcen-Objekt (*res.o) von der NATIVEN ARM64-Seite entfernen und nur
+    # ueber die ARM64EC-Seite einbringen.
+    $beforeNat = $arm64Objs.Count
+    $arm64Objs = @($arm64Objs | Where-Object { $_ -notmatch '(?i)res\.o$' })
+    $dropped = $beforeNat - $arm64Objs.Count
+    if ($dropped -gt 0) {
+        Write-Host "Merge: $dropped Ressourcen-Objekt(e) (*res.o) von der ARM64-Seite entfernt (Duplikat-VERSION, CVT1100)."
     }
 
     $arm64Def   = Join-Path $arm64Stage   "$LibBase.def"
