@@ -4,9 +4,10 @@
 #  Zweck: Machbarkeitsnachweis fuer "true merged ARM64X" (OHNE Forwarder).
 #  Stufe 1 (bestaetigt): avutil.
 #  Stufe 2 (dieser Lauf): avcodec -- der harte Fall (viele Objekte, haengt von
-#  avutil ab, in unserer Konfiguration mit NVENC/NVDEC/AMF). Testet, ob ein
-#  ABHAENGIGER Merge die avutil-Importe gegen die GEMERGTE avutil-Import-Lib
-#  aufloest und als ARM64X verifiziert.
+#  avutil ab). Testet, ob ein ABHAENGIGER Merge die avutil-Importe gegen die
+#  GEMERGTE avutil-Import-Lib aufloest und als ARM64X verifiziert. HW-Encoder
+#  (AMF/NVENC/NVDEC) sind hier bewusst weggelassen -- orthogonal zur
+#  Merge-Frage und bringen nur pkgconf-Umgebungsthemen ins Spiel.
 #
 #  Ablauf: avutil + avcodec je zweimal bauen (arm64 + arm64ec), je Ansicht die
 #  Objekte + .def sichern. Dann avutil mergen (erzeugt avutil.lib), danach
@@ -98,17 +99,12 @@ jobs:
           "FFMPEG_SRC=$ffmpegSrc" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "FFmpeg-Quelle: $ffmpegSrc"
 
-      # Hardware-Header (AMF + nv-codec) wie produktiv -- avcodec braucht sie
-      # fuer --enable-amf/--enable-nvenc/--enable-nvdec.
-      - name: Fetch + install hardware headers
-        run: |
-          $ErrorActionPreference = 'Stop'
-          function Clone-Repo { param($u,$d) if (-not (Test-Path -LiteralPath $d)) { git clone --depth=1 $u $d; if ($LASTEXITCODE -ne 0) { Write-Error "clone $u" } } }
-          Clone-Repo 'https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git' (Join-Path $env:SRC_DIR 'AMF')
-          Clone-Repo 'https://github.com/FFmpeg/nv-codec-headers.git' (Join-Path $env:SRC_DIR 'nv-codec-headers')
-          & "${{ github.workspace }}\scripts\install-hwheaders.ps1" `
-            -AmfHeaderPath "$env:AMF_HEADERS" -NvCodecHeaderPath "$env:NVCODEC_HEADERS" -OutputDir "$env:HW_HEADERS"
-
+      # HINWEIS: Die Hardware-Encoder (AMF/NVENC/NVDEC) sind fuer DIESEN
+      # Machbarkeitstest BEWUSST WEGGELASSEN. Die Frage von Stufe 2 ist allein,
+      # ob ein ABHAENGIGER Merge (avcodec -> avutil) funktioniert; die
+      # avutil-Abhaengigkeit besteht unabhaengig von HW-Encodern. HW-Encoder
+      # wuerden nur die (orthogonale) pkgconf/ffnvcodec-Umgebung ins Spiel
+      # bringen, die die produktive Pipeline bereits loest.
       - name: Apply FFmpeg source backports
         run: |
           $ErrorActionPreference = 'Stop'
@@ -127,8 +123,7 @@ jobs:
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
           set "MSYS2_PATH_TYPE=inherit"
-          bash -lc "HW=$(cygpath -u \"$HW_HEADERS\"); echo '--- pkgconfig diag ---'; ls -la \"$HW/lib/pkgconfig\" || true; cat \"$HW/lib/pkgconfig/ffnvcodec.pc\" || true; export PKG_CONFIG_PATH=\"$HW/lib/pkgconfig\"; which pkg-config pkgconf || true; pkg-config --exists ffnvcodec && echo FFNVCODEC_FOUND || echo FFNVCODEC_MISSING; pkg-config --cflags ffnvcodec || true; ls \"$HW/include/ffnvcodec\" | head || true"
-          bash -lc "cd \"$FFMPEG_SRC\" && HW=$(cygpath -u \"$HW_HEADERS\") && export PKG_CONFIG_PATH=\"$HW/lib/pkgconfig\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --pkg-config=/usr/bin/pkgconf --pkg-config-flags=--static --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --enable-amf --enable-nvenc --enable-nvdec --extra-cflags=-I$HW/include || (echo '==== config.log tail ===='; tail -40 ffbuild/config.log; exit 1)"
+          bash -lc "cd \"$FFMPEG_SRC\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 || (echo '==== config.log tail ===='; tail -40 ffbuild/config.log; exit 1)"
           if errorlevel 1 exit /b 1
           call "%VCVARS%"
           bash -lc "cd \"$FFMPEG_SRC\" && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll"
@@ -149,7 +144,7 @@ jobs:
           call "%VCVARS%"
           if errorlevel 1 exit /b 1
           set "MSYS2_PATH_TYPE=inherit"
-          bash -lc "cd \"$FFMPEG_SRC\" && HW=$(cygpath -u \"$HW_HEADERS\") && export PKG_CONFIG_PATH=\"$HW/lib/pkgconfig\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --pkg-config=/usr/bin/pkgconf --pkg-config-flags=--static --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --enable-amf --enable-nvenc --enable-nvdec --extra-cflags=\"-arm64EC -I$HW/include\" --extra-ldflags=-machine:arm64ec && printf '\nCFLAGS += -arm64EC\nLDFLAGS += -machine:arm64ec\n' >> ffbuild/config.mak && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll"
+          bash -lc "cd \"$FFMPEG_SRC\" && make distclean 2>/dev/null; ./configure --toolchain=msvc --target-os=win32 --enable-cross-compile --disable-asm --disable-filter=gfxcapture --enable-shared --disable-static --arch=arm64 --extra-cflags=-arm64EC --extra-ldflags=-machine:arm64ec && printf '\nCFLAGS += -arm64EC\nLDFLAGS += -machine:arm64ec\n' >> ffbuild/config.mak && make -j CCDEP= CXXDEP= libavutil/avutil-60.dll libavcodec/avcodec-62.dll"
           if errorlevel 1 exit /b 1
           pwsh -NoProfile -ExecutionPolicy Bypass -File "%GITHUB_WORKSPACE%\scripts\experimental\merge-arm64x-true.ps1" ^
             -Mode Capture -SourceDir "%FFMPEG_SRC%" -Arch arm64ec -StageDir "%STAGE_DIR%" -LibBase avutil-60
