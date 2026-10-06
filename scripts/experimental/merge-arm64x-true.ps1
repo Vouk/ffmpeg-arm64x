@@ -270,6 +270,23 @@ function Invoke-Merge {
     Set-Content -LiteralPath $ecRsp  -Value (($arm64ecObjs | ForEach-Object { '"' + $_ + '"' }) -join "`n") -Encoding Ascii
     Set-Content -LiteralPath $natRsp -Value (($arm64Objs   | ForEach-Object { '"' + $_ + '"' }) -join "`n") -Encoding Ascii
 
+    # System-Import-Libs: FFmpegs eigener Link reicht ueber EXTRALIBS die Win32-
+    # Bibliotheken ein (bcrypt, user32, ...). Unser Stand-alone-/machine:arm64x-
+    # Link muss sie ebenfalls uebergeben, sonst LNK2019 "unresolved external
+    # symbol ... (EC Symbol)" / "(Arm64 Native Symbol)". Fuer /machine:arm64x
+    # loest der Linker Namen aus den SDK-LIB-Pfaden auf -- je Seite die passende
+    # ARM64- bzw. ARM64EC-Variante (das Win11-SDK liefert beide). Die Liste
+    # entspricht FFmpegs avutil-Abhaengigkeiten auf Windows.
+    $sysLibs = @(
+        'bcrypt.lib'      # BCryptGenRandom etc. (random_seed)
+        'user32.lib'      # GetDesktopWindow (hwcontext_dxva2)
+        'ole32.lib'       # COM (diverse hwcontext)
+        'advapi32.lib'    # Registry/Krypto-Altpfade
+        'ws2_32.lib'      # Sockets (von anderen Libs geteilt; harmlos fuer avutil)
+        'secur32.lib'
+        'kernel32.lib'
+    )
+
     $linkArgs = @(
         '/dll'
         '/machine:arm64x'
@@ -279,7 +296,7 @@ function Invoke-Merge {
         "/defArm64Native:$arm64Def"
         "@$ecRsp"
         "@$natRsp"
-    )
+    ) + $sysLibs
 
     Write-Host "Merge-Link ($LibBase): $($arm64Objs.Count) ARM64- + $($arm64ecObjs.Count) ARM64EC-Objekte -> $outDll"
     Write-Host "  link $($linkArgs -join ' ')"
