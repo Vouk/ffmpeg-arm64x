@@ -71,6 +71,13 @@ param(
     [Parameter()] [string] $LibBase = '',
     [Parameter()] [string] $LinkExe = 'link.exe',
 
+    # (Capture) Wenn gesetzt: die exakte Objektliste MUSS aus FFmpegs
+    # <base>.dll.objs-Response-Datei stammen. Fehlt sie, bricht die Capture ab
+    # (KEIN Glob-Fallback) -- so ist die Objektmenge garantiert identisch mit
+    # dem, was FFmpeg selbst gelinkt hat (verhindert fehlende Objekte wie
+    # ff_aac_sbr_vlc beim grossen avcodec).
+    [Parameter()] [switch] $RequireObjsFile,
+
     # (Merge) Zusaetzliche Import-Libs, gegen die gelinkt wird -- insbesondere
     # die bereits GEMERGTEN ARM64X-Import-Libs der Abhaengigkeiten (z. B. das
     # avutil.lib aus dem avutil-Merge, wenn avcodec gemergt wird). Eine
@@ -149,7 +156,8 @@ function Invoke-Capture {
         [Parameter(Mandatory)][string] $SourceDir,
         [Parameter(Mandatory)][string] $Arch,
         [Parameter(Mandatory)][string] $StageDir,
-        [Parameter(Mandatory)][string] $LibBase
+        [Parameter(Mandatory)][string] $LibBase,
+        [switch] $RequireObjsFile
     )
 
     $archKey = $Arch.ToLowerInvariant()
@@ -166,26 +174,44 @@ function Invoke-Capture {
     $objStage = Join-Path $stage 'obj'
     New-Item -ItemType Directory -Force -Path $objStage | Out-Null
 
-    # 1) Objektliste ermitteln. Bevorzugt aus der .objs-Response-Datei (sie
-    #    enthaelt GENAU die Objekte, die FFmpeg in die DLL gelinkt hat --
-    #    inkl. der korrekten Reihenfolge und ohne Test-/Hilfsobjekte). Fehlt
-    #    sie, Fallback: alle *.o im lib-Verzeichnis.
+    # 1) Objektliste ermitteln. Quelle der Wahrheit ist FFmpegs
+    #    <base>.dll.objs-Response-Datei: sie enthaelt GENAU die Objekte (inkl.
+    #    Reihenfolge), die FFmpeg in die DLL gelinkt hat -- ohne Test-/
+    #    Hilfsobjekte und MIT generierten Tabellen-Objekten aus Unterordnern.
+    #    `.objs.keep` (falls vorhanden) wird bevorzugt, dann `.objs`.
+    $objsKeep = Join-Path $srcLibDir "$LibBase.dll.objs.keep"
     $objsFile = Join-Path $srcLibDir "$LibBase.dll.objs"
+    $usedObjs = $null
     $tokens = @()
-    if (Test-Path -LiteralPath $objsFile) {
-        $raw = [System.IO.File]::ReadAllText($objsFile)
-        $tokens = @($raw -split '\s+' | Where-Object { $_ -match '\.o$' })
+    foreach ($cand in @($objsKeep, $objsFile)) {
+        if (Test-Path -LiteralPath $cand) {
+            $raw = [System.IO.File]::ReadAllText($cand)
+            $t = @($raw -split '\s+' | Where-Object { $_ -match '\.o$' })
+            if ($t.Count -gt 0) { $tokens = $t; $usedObjs = $cand; break }
+        }
     }
-    if ($tokens.Count -eq 0) {
+
+    if ($tokens.Count -gt 0) {
+        Write-Host "Capture: Objektliste aus Response-Datei '$usedObjs' ($($tokens.Count) Objekte)."
+    }
+    elseif ($RequireObjsFile) {
+        # Fail-closed: KEIN Glob-Fallback. Die exakte FFmpeg-Objektliste ist
+        # Pflicht, sonst fehlen beim grossen avcodec einzelne Objekte.
+        $listing = ((Get-ChildItem -LiteralPath $srcLibDir -File -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.Name }) -join ', ')
+        throw "Response-Datei '$objsFile'(.keep) fehlt/leer und -RequireObjsFile ist gesetzt. " +
+              "Ohne die exakte FFmpeg-Objektliste wird NICHT gegliobt. Inhalt '$srcLibDir': $listing"
+    }
+    else {
         Write-Host "WARN: '$objsFile' fehlt/leer -- Fallback auf alle *.o in '$srcLibDir'."
         $tokens = @(Get-ChildItem -LiteralPath $srcLibDir -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '\.o$' } |
             ForEach-Object { Join-Path $libDirName $_.Name })  # relativ zum Quellbaum
-    }
-    if ($tokens.Count -eq 0) {
-        $listing = ((Get-ChildItem -LiteralPath $srcLibDir -File -ErrorAction SilentlyContinue |
-            ForEach-Object { $_.Name }) -join ', ')
-        throw "Keine Objekte fuer '$LibBase' gefunden (weder '$objsFile' noch *.o in '$srcLibDir'). Inhalt: $listing"
+        if ($tokens.Count -eq 0) {
+            $listing = ((Get-ChildItem -LiteralPath $srcLibDir -File -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.Name }) -join ', ')
+            throw "Keine Objekte fuer '$LibBase' gefunden (weder '$objsFile' noch *.o in '$srcLibDir'). Inhalt: $listing"
+        }
     }
 
     # Objekte flach ins Stage kopieren; dabei den relativen Pfad als Dateiname
@@ -378,7 +404,7 @@ if ($Mode -ieq 'Capture') {
     if ([string]::IsNullOrWhiteSpace($Arch))      { throw "-Arch ist im Capture-Modus erforderlich." }
     # Default: avutil. Fuer andere Libs -LibBase (z. B. avcodec-62) uebergeben.
     $base = if ([string]::IsNullOrWhiteSpace($LibBase)) { Find-DefaultLibBase -SourceDir $SourceDir -Stem 'avutil' } else { $LibBase }
-    Invoke-Capture -SourceDir $SourceDir -Arch $Arch -StageDir $StageDir -LibBase $base
+    Invoke-Capture -SourceDir $SourceDir -Arch $Arch -StageDir $StageDir -LibBase $base -RequireObjsFile:$RequireObjsFile
 }
 else {
     if ([string]::IsNullOrWhiteSpace($OutputDir)) { throw "-OutputDir ist im Merge-Modus erforderlich." }
