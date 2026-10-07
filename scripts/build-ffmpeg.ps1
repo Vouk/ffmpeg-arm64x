@@ -11,9 +11,9 @@
     Der anschließende ARM64X-Merge über beide Architektur-Ansichten ist NICHT
     Teil dieses Skripts (siehe scripts/merge-arm64x.ps1).
 
-    Gebaut wird ausschliesslich die LGPL-Variante, als Shared Libraries, OHNE
-    GPL-Komponenten (kein x264/x265), aber MIT den Hardware-Encodern AMF und
-    NVENC/NVDEC (header-only SDK-Integrationen, LGPL-vertraeglich).
+    Gebaut werden LGPL und GPL als Shared Libraries, beide OHNE Hardware-
+    Encoder (kein AMF/NVENC/NVDEC -- die blockierten einen ARM64EC-Host auf
+    Windows-on-ARM beim Plugin-Init). GPL ergaenzt x264/x265.
 
     Ablauf je Durchlauf:
       1. Reinlogik-Modul scripts/lib/BuildConfig.psm1 importieren und die
@@ -86,14 +86,6 @@ param(
 
     [Parameter(Mandatory)]
     [string] $OutputDir,
-
-    # Prefix mit den abgelegten Hardware-Headern (AMF + nv-codec), so wie
-    # scripts/install-hwheaders.ps1 ihn erzeugt: <HwHeadersDir>\include\AMF,
-    # <HwHeadersDir>\include\ffnvcodec und
-    # <HwHeadersDir>\lib\pkgconfig\ffnvcodec.pc. Fehlt der Pfad, bricht
-    # configure fuer --enable-amf/--enable-nvenc/--enable-nvdec ab.
-    [Parameter()]
-    [string] $HwHeadersDir,
 
     # Lizenz-Variante: 'lgpl' (Default) oder 'gpl'. GPL zieht x264/x265 ueber
     # Get-ConfigureFlags und -DepsDir herein.
@@ -208,7 +200,6 @@ function Get-FFmpegBuildPlan {
         [Parameter(Mandatory)][string] $OutputDir,
         [Parameter(Mandatory)][string] $Msys2Bash,
         [Parameter(Mandatory)][int] $Jobs,
-        [string] $HwHeadersDir,
         [string] $LinkReproDir,
         [string] $PkgConfig = '',
         [string] $Variant = 'lgpl',
@@ -252,19 +243,9 @@ function Get-FFmpegBuildPlan {
         $configureArgs.Add("--extra-ldflags=/LINKREPROFULLPATHRSP:$lrWin")
     }
 
-    # Hardware-Header (AMF + nv-codec, von scripts/install-hwheaders.ps1
-    # abgelegt): AMF ueber den include-Pfad (FFmpeg inkludiert <AMF/core/
-    # Version.h>), ffnvcodec ueber seine .pc-Datei (configure prueft ffnvcodec
-    # nur per pkg-config). Beide Pfade in configure und PKG_CONFIG_PATH reichen.
+    # pkgconfig-Verzeichnisse fuer PKG_CONFIG_PATH (nur noch vom GPL-x264/x265-
+    # Block befuellt; Hardware-Header entfielen mit AMF/NVENC/NVDEC).
     $pkgConfigDirs = [System.Collections.Generic.List[string]]::new()
-    if ($HwHeadersDir -and (Test-Path -LiteralPath $HwHeadersDir)) {
-        $hwIncPosix = ConvertTo-Msys2Path -Path (Join-Path $HwHeadersDir 'include')
-        $configureArgs.Add("--extra-cflags=-I$hwIncPosix")
-        $hwPcDir = Join-Path (Join-Path $HwHeadersDir 'lib') 'pkgconfig'
-        if (Test-Path -LiteralPath $hwPcDir) {
-            $pkgConfigDirs.Add((ConvertTo-Msys2Path -Path $hwPcDir))
-        }
-    }
 
     # Nur GPL: statische x264/x265 (von build-deps.ps1 je Arch gebaut).
     # Je Codec include-Pfad (-I) und lib-Pfad (-LIBPATH) hineinreichen und das
@@ -294,15 +275,14 @@ function Get-FFmpegBuildPlan {
     $quotedConfigureArgs = ($configureArgsArr | ForEach-Object { ConvertTo-BashSingleQuoted $_ }) -join ' '
     $quotedSource = ConvertTo-BashSingleQuoted $sourcePosix
 
-    # PKG_CONFIG_PATH fuer ffnvcodec.pc setzen (sonst findet configure
-    # ffnvcodec nicht und --enable-nvenc/--enable-nvdec brechen ab). Ohne
-    # HW-Header bleibt die Zeile ein No-op (":").
+    # PKG_CONFIG_PATH setzen (nur GPL: x264.pc/x265.pc). Ohne Eintraege (LGPL)
+    # bleibt die Zeile ein No-op (":").
     $pkgPathLine = if ($pkgConfigDirs.Count -gt 0) {
         "export PKG_CONFIG_PATH='" + ($pkgConfigDirs -join ':') + "'"
     } else { ':' }
-    # Diagnose: zeigt im CI-Log, ob pkg-config ffnvcodec findet und warum.
+    # Diagnose: zeigt im CI-Log, ob pkg-config die GPL-Encoder findet.
     # Laeuft nicht-fatal (|| true), damit set -e hier nicht abbricht.
-    $pkgDiag = 'echo PKG_CONFIG_PATH=$PKG_CONFIG_PATH; which pkg-config pkgconf 2>/dev/null || true; for L in ffnvcodec; do echo -- $L --; pkg-config --exists $L && echo found || echo missing; pkg-config --cflags --libs $L 2>&1 || true; done'
+    $pkgDiag = 'echo PKG_CONFIG_PATH=$PKG_CONFIG_PATH; which pkg-config pkgconf 2>/dev/null || true; for L in x264 x265; do echo -- $L --; pkg-config --exists $L && echo found || echo missing; pkg-config --cflags --libs $L 2>&1 || true; done'
 
     # MSVC-Dependency-Generierung abschalten (CCDEP/CXXDEP leer).
     # ffbuild/common.mak ruft je Objekt $(call CCDEP,CC) als eigenen Lauf auf;
@@ -472,7 +452,6 @@ $plan = Get-FFmpegBuildPlan `
     -OutputDir $OutputDir `
     -Msys2Bash $Msys2Bash `
     -Jobs $Jobs `
-    -HwHeadersDir $HwHeadersDir `
     -LinkReproDir $LinkReproDir `
     -PkgConfig $PkgConfig `
     -Variant $Variant `
@@ -506,8 +485,6 @@ if (-not (Test-Path -LiteralPath $Msys2Bash)) {
 }
 
 # Backports auf den FFmpeg-Quellbaum (siehe scripts/lib/FFmpegPatch.psm1):
-#   * NVENC/NVDEC auf aarch64 Windows freischalten (93f653f95c) -- sonst
-#     bricht configure mit --enable-nvdec/--enable-nvenc ab.
 #   * makedef die .objs-Response-Datei reichen (8512161c81) -- ohne das
 #     reisst libavcodec mit ~1000 Objekten die Kommandozeilen-Grenze.
 # Idempotent: enthaelt die Quelle einen Fix bereits, bleibt sie unveraendert.
@@ -528,7 +505,7 @@ Write-Host "Baue FFmpeg ($($plan.Variant))/$($plan.Arch) unter MSYS2 ..."
 & $plan.Msys2Bash '-lc' $plan.BashScript
 if ($LASTEXITCODE -ne 0) {
     # Bei configure-/Build-Fehler FFmpegs config.log ausgeben -- dort steht
-    # die konkrete Ursache (z. B. warum pkg-config ffnvcodec nicht akzeptiert).
+    # die konkrete Ursache (z. B. warum pkg-config x264/x265 nicht akzeptiert).
     $ffCfgLog = Join-Path $SourceDir 'ffbuild/config.log'
     if (Test-Path -LiteralPath $ffCfgLog) {
         Write-Host '----- FFmpeg ffbuild/config.log (letzte 120 Zeilen) -----'
@@ -599,8 +576,8 @@ foreach ($base in $dllBases) {
 Write-Host "ARM64X-Vorbereitung: $defCount .def- und $libCount .lib-Datei(en) nach $libOut kopiert."
 
 # Statische Faehigkeitspruefung: FFmpeg verteilt die CONFIG_-Schalter auf ZWEI
-# generierte Header: ffbuild/config.h (HW-Libs: CONFIG_AMF, CONFIG_CUDA,
-# CONFIG_NVDEC, CONFIG_FFNVCODEC ...) und ffbuild/config_components.h (die
+# generierte Header: ffbuild/config.h (Libs: CONFIG_GPL, CONFIG_LIBX264,
+# CONFIG_LIBX265 ...) und ffbuild/config_components.h (die
 # Komponenten-Schalter CONFIG_*_ENCODER/_DECODER/_HWACCEL ...). Da ARM64-
 # ffmpeg.exe auf dem x64-Runner NICHT ausfuehrbar ist, pruefen wir die
 # Faehigkeiten statisch aus BEIDEN Headern. Der Quellbaum wird fuer beide

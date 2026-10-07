@@ -3,8 +3,8 @@
   Product.wxs — WiX v3.x Produktdefinition fuer den ARM64X-FFmpeg-8-Installer.
 
   Zwei Varianten, per Praeprozessor-Variable $(var.Variant) gewaehlt (GPL|LGPL):
-    * LGPL: ohne x264/x265 (mit AMF + NVENC/NVDEC).
-    * GPL : zusaetzlich x264/x265.
+    * LGPL: ohne x264/x265 (keine Hardware-Encoder).
+    * GPL : zusaetzlich x264/x265 (keine Hardware-Encoder).
   Der Installer wird je Variante einmal gebaut -> zwei MSI.
 
   Aufruf (Beispiel, in der CI-Paketierung):

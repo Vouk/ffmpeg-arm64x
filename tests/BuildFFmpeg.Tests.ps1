@@ -4,40 +4,32 @@
     Deckt vor allem ab, dass die MSVC-Dependency-Generierung abgeschaltet
     bleibt: ffbuild/common.mak ruft je Objekt $(call CCDEP,CC) auf, dessen
     awk-Programm bei FFmpeg <= 8.1.3 kaputt escaped ankommt und make abbricht.
-    Zudem: LGPL-only, Shared, keine GPL-Encoder, aber MIT AMF + NVENC/NVDEC.
+    Zudem: Shared, keine Hardware-Encoder (kein AMF/NVENC/NVDEC); GPL ergaenzt
+    x264/x265.
 #>
 
 BeforeAll {
     $script:BuildFFmpeg = Join-Path (Split-Path -Parent $PSScriptRoot) "scripts/build-ffmpeg.ps1"
 
     function New-Plan {
-        param([string] $Arch = "arm64", [switch] $WithHwHeaders)
+        param([string] $Arch = "arm64")
         $root = Join-Path $TestDrive ([guid]::NewGuid().ToString("N").Substring(0, 8))
-        $hw = Join-Path $root "hwheaders"
-        if ($WithHwHeaders) {
-            New-Item -ItemType Directory -Force -Path (Join-Path $hw "include") | Out-Null
-            New-Item -ItemType Directory -Force -Path (Join-Path $hw "lib/pkgconfig") | Out-Null
-        }
         & $script:BuildFFmpeg -Arch $Arch -SourceDir (Join-Path $root "src") `
-            -OutputDir (Join-Path $root "out") -HwHeadersDir $hw -DryRun 6>$null
+            -OutputDir (Join-Path $root "out") -DryRun 6>$null
     }
 
     function New-MergedPlan {
         param([string] $Arch = "arm64")
         $root = Join-Path $TestDrive ([guid]::NewGuid().ToString("N").Substring(0, 8))
-        $hw = Join-Path $root "hwheaders"
         $lr = Join-Path $root "lr"
         New-Item -ItemType Directory -Force -Path $lr | Out-Null
         & $script:BuildFFmpeg -Arch $Arch -SourceDir (Join-Path $root "src") `
-            -OutputDir (Join-Path $root "out") -HwHeadersDir $hw -LinkReproDir $lr -DryRun 6>$null
+            -OutputDir (Join-Path $root "out") -LinkReproDir $lr -DryRun 6>$null
     }
 
     function New-GplPlan {
         param([string] $Arch = "arm64")
         $root = Join-Path $TestDrive ([guid]::NewGuid().ToString("N").Substring(0, 8))
-        $hw = Join-Path $root "hwheaders"
-        New-Item -ItemType Directory -Force -Path (Join-Path $hw "include") | Out-Null
-        New-Item -ItemType Directory -Force -Path (Join-Path $hw "lib/pkgconfig") | Out-Null
         # build-ffmpeg.ps1 (GPL) bricht ab, wenn <DepsDir>\<codec>\<arch> fehlt.
         # Fuer die reine Plan-Zusammensetzung genuegen die Verzeichnisse (die
         # Libs selbst werden erst beim echten Link gebraucht).
@@ -47,11 +39,11 @@ BeforeAll {
             New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path (Join-Path $deps $codec) $Arch) "lib/pkgconfig") | Out-Null
         }
         & $script:BuildFFmpeg -Arch $Arch -Variant gpl -SourceDir (Join-Path $root "src") `
-            -OutputDir (Join-Path $root "out") -HwHeadersDir $hw -DepsDir $deps -DryRun 6>$null
+            -OutputDir (Join-Path $root "out") -DepsDir $deps -DryRun 6>$null
     }
 }
 
-Describe "build-ffmpeg: configure-Flags (LGPL, Shared, HW-Encoder)" {
+Describe "build-ffmpeg: configure-Flags (LGPL, Shared, ohne HW-Encoder)" {
     It "baut shared und nicht statisch" {
         $args = (New-Plan).ConfigureArgs -join " "
         $args | Should -Match "--enable-shared"
@@ -65,15 +57,15 @@ Describe "build-ffmpeg: configure-Flags (LGPL, Shared, HW-Encoder)" {
         $args | Should -Not -Match "libx265"
     }
 
-    It "aktiviert die Hardware-Encoder AMF + NVENC/NVDEC" {
+    It "aktiviert KEINE Hardware-Encoder (kein AMF/NVENC/NVDEC)" {
         $args = (New-Plan).ConfigureArgs -join " "
-        $args | Should -Match "--enable-amf"
-        $args | Should -Match "--enable-nvenc"
-        $args | Should -Match "--enable-nvdec"
+        $args | Should -Not -Match "--enable-amf"
+        $args | Should -Not -Match "--enable-nvenc"
+        $args | Should -Not -Match "--enable-nvdec"
     }
 }
 
-Describe "build-ffmpeg: configure-Flags (GPL, mit x264/x265 + HW-Encoder)" {
+Describe "build-ffmpeg: configure-Flags (GPL, mit x264/x265, ohne HW-Encoder)" {
     It "aktiviert GPL und die Encoder libx264 + libx265" {
         $args = (New-GplPlan).ConfigureArgs -join " "
         $args | Should -Match "--enable-gpl"
@@ -81,11 +73,11 @@ Describe "build-ffmpeg: configure-Flags (GPL, mit x264/x265 + HW-Encoder)" {
         $args | Should -Match "--enable-libx265"
     }
 
-    It "aktiviert weiterhin die Hardware-Encoder AMF + NVENC/NVDEC" {
+    It "aktiviert auch im GPL-Build KEINE Hardware-Encoder" {
         $args = (New-GplPlan).ConfigureArgs -join " "
-        $args | Should -Match "--enable-amf"
-        $args | Should -Match "--enable-nvenc"
-        $args | Should -Match "--enable-nvdec"
+        $args | Should -Not -Match "--enable-amf"
+        $args | Should -Not -Match "--enable-nvenc"
+        $args | Should -Not -Match "--enable-nvdec"
     }
 
     It "reicht include- und lib-Pfade der x264/x265-Deps weiter" {
@@ -98,12 +90,10 @@ Describe "build-ffmpeg: configure-Flags (GPL, mit x264/x265 + HW-Encoder)" {
 
     It "bricht ab, wenn die x264/x265-Deps fuer die Arch fehlen" {
         $root = Join-Path $TestDrive ([guid]::NewGuid().ToString("N").Substring(0, 8))
-        $hw = Join-Path $root "hwheaders"
-        New-Item -ItemType Directory -Force -Path $hw | Out-Null
         $deps = Join-Path $root "deps-empty"
         New-Item -ItemType Directory -Force -Path $deps | Out-Null
         { & $script:BuildFFmpeg -Arch arm64 -Variant gpl -SourceDir (Join-Path $root "src") `
-            -OutputDir (Join-Path $root "out") -HwHeadersDir $hw -DepsDir $deps -DryRun 6>$null } |
+            -OutputDir (Join-Path $root "out") -DepsDir $deps -DryRun 6>$null } |
             Should -Throw -ExpectedMessage "*x264-Deps*"
     }
 }
@@ -130,19 +120,6 @@ Describe "build-ffmpeg: MERGED-Modus Tools-Build (ffmpeg.exe/ffprobe.exe)" {
     It "baut die Tools NUR in der arm64-Ansicht, nicht fuer arm64ec" {
         $bash = @((New-MergedPlan -Arch "arm64ec").BashScript -split "`n")
         ($bash -join "`n") | Should -Not -Match "make .*ffmpeg\.exe ffprobe\.exe"
-    }
-}
-
-Describe "build-ffmpeg: Hardware-Header" {
-    It "reicht include und pkgconfig der hwheaders weiter, wenn vorhanden" {
-        $plan = New-Plan -WithHwHeaders
-        ($plan.ConfigureArgs -join " ") | Should -Match "extra-cflags=-I\S*hwheaders/include"
-        $plan.BashScript | Should -Match "hwheaders/lib/pkgconfig"
-    }
-
-    It "laeuft ohne hwheaders-Verzeichnis durch" {
-        $plan = New-Plan
-        ($plan.ConfigureArgs -join " ") | Should -Not -Match "hwheaders"
     }
 }
 

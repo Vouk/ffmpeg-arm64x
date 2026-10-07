@@ -33,9 +33,6 @@ env:
   OUT_DIR: ${{ github.workspace }}\out
   STAGE_DIR: ${{ github.workspace }}\out\merge-stage
   MERGED_DIR: ${{ github.workspace }}\out\merged
-  AMF_HEADERS: ${{ github.workspace }}\src\AMF\amf\public\include
-  NVCODEC_HEADERS: ${{ github.workspace }}\src\nv-codec-headers\include
-  HW_HEADERS: ${{ github.workspace }}\out\hwheaders
 
 jobs:
   experiment:

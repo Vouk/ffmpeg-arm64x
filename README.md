@@ -1,6 +1,6 @@
 # ARM64X-FFmpeg-Build
 
-Standalone-Repository, das **FFmpeg 8** (Standard: **8.1.3**) als **ARM64X-Hybrid-Binärdateien** (Windows on ARM: eine PE-Datei mit ARM64- *und* ARM64EC-Ansicht) baut, ausschließlich als **dynamische Bibliotheken** (Shared/DLL). Es werden **zwei Varianten** gebaut — **LGPL** (ohne GPL-Encoder) und **GPL** (zusätzlich x264/x265) — beide mit den Hardware-Encodern **AMF** und **NVENC/NVDEC**, und daraus **zwei MSI-Installer** erzeugt.
+Standalone-Repository, das **FFmpeg 8** (Standard: **8.1.3**) als **ARM64X-Hybrid-Binärdateien** (Windows on ARM: eine PE-Datei mit ARM64- *und* ARM64EC-Ansicht) baut, ausschließlich als **dynamische Bibliotheken** (Shared/DLL). Es werden **zwei Varianten** gebaut — **LGPL** (ohne GPL-Encoder) und **GPL** (zusätzlich x264/x265) — **ohne Hardware-Encoder**, und daraus **zwei MSI-Installer** erzeugt.
 
 Der Build läuft vollautomatisch, aber **ausschließlich manuell ausgelöst** (`workflow_dispatch`) auf GitHub Actions.
 
@@ -13,8 +13,8 @@ Der Build läuft vollautomatisch, aber **ausschließlich manuell ausgelöst** (`
 - **Zwei Lizenz-Varianten**, je ein eigenes MSI:
   - **LGPL**: ohne `--enable-gpl`, ohne libx264/libx265.
   - **GPL**: zusätzlich `--enable-gpl --enable-libx264 --enable-libx265`. x264 und x265 werden von `scripts/build-deps.ps1` **statisch** für ARM64 *und* ARM64EC gebaut und direkt in `avcodec` eingelinkt.
-- **Hardware-Encoder (beide Varianten)**: AMD **AMF** (`--enable-amf`) und NVIDIA **NVENC/NVDEC** (`--enable-nvenc --enable-nvdec`). Das sind header-only SDK-Integrationen (AMF-Header + nv-codec-headers), die zur Laufzeit die Treiber-DLLs laden.
-- **Zwei MSI-Installer** (WiX): `ffmpeg-<version>-lgpl-arm64x.msi` und `ffmpeg-<version>-gpl-arm64x.msi`. Je MSI: Lizenzanzeige (variantenspezifische RTF), anpassbarer Installationspfad (Standard `C:\Program Files\FFmpeg 8`), Eintrag des `bin`-Pfads an den Anfang der System-`PATH`-Variable. GPL und LGPL haben verschiedene `UpgradeCode`s und sind nebeneinander installierbar.
+- **Keine Hardware-Encoder**: AMF und NVENC/NVDEC sind bewusst **nicht** enthalten. Auf Windows-on-ARM laden ihre Laufzeit-Probes die x64-GPU-Runtimes (nvcuda/nvEncodeAPI/amfrt) über die Emulation und blockieren in einem **ARM64EC**-Host (z. B. DaVinci Resolve) die Codec-/Device-Enumeration beim Plugin-Start minutenlang. WoA-Geräte haben zudem meist keine passende NVIDIA/AMD-GPU. Es bleiben die Software-Encoder (und im GPL-Build x264/x265).
+- **Zwei MSI-Installer** (WiX): `ffmpeg-<version>-lgpl-arm64x.msi` und `ffmpeg-<version>-gpl-arm64x.msi`. Je MSI: Lizenzanzeige (variantenspezifische RTF, aktive Zustimmung erforderlich), anpassbarer Installationspfad (Standard `C:\Program Files\FFmpeg 8`; die DLLs und EXEs liegen direkt darin, kein `bin`-Unterordner), Eintrag dieses Verzeichnisses an den Anfang der System-`PATH`-Variable. GPL und LGPL haben verschiedene `UpgradeCode`s und sind nebeneinander installierbar.
 
 ## Verzeichnisstruktur
 
@@ -35,7 +35,7 @@ Zentrale Skripte:
 - `scripts/build-ffmpeg.ps1` — baut eine (Variante, Architektur); Parameter `-Variant lgpl|gpl` und `-DepsDir` (GPL: x264/x265-Wurzel).
 - `scripts/build-deps.ps1` — baut x264 + x265 statisch für arm64 + arm64ec (nur GPL).
 - `scripts/merge-arm64x-merged.ps1` / `scripts/verify-arm64x-merged.ps1` — True-Single-File-Merge und dessen Verifikation.
-- `scripts/verify-capabilities.ps1` — statische Fähigkeitsprüfung aus FFmpegs `config.h` (`-Variant`: GPL verlangt x264/x265, LGPL verbietet sie; beide verlangen AMF + NVENC/NVDEC).
+- `scripts/verify-capabilities.ps1` — statische Fähigkeitsprüfung aus FFmpegs `config.h` (`-Variant`: GPL verlangt x264/x265, LGPL verbietet sie; beide verbieten AMF/NVENC/NVDEC, die entfernt wurden).
 
 ## Build auslösen
 

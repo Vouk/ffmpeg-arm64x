@@ -10,8 +10,8 @@
     weiterreicht.
 
     Es werden ZWEI Varianten unterstuetzt, beide als Shared Libraries
-    (DLL + Import-.lib), beide mit den Hardware-Encodern AMF (AMD) und
-    NVENC/NVDEC (NVIDIA):
+    (DLL + Import-.lib), beide OHNE Hardware-Encoder (kein AMF/NVENC/NVDEC --
+    siehe Begruendung unten):
       * LGPL (Default): OHNE GPL-Komponenten (kein --enable-gpl, kein
         libx264/libx265).
       * GPL: zusaetzlich --enable-gpl --enable-libx264 --enable-libx265
@@ -24,12 +24,16 @@
         --enable-shared --disable-static
         --arch=arm64  (die arm64ec-Ansicht entsteht ueber cl /arm64EC +
                        link /machine:arm64ec, nicht ueber --arch)
-        --enable-amf                    (AMF-Header)
-        --enable-nvenc --enable-nvdec   (nv-codec-headers)
         fuer arm64ec zusaetzlich:
           --extra-cflags=-arm64EC --extra-ldflags=-machine:arm64ec
     Nur GPL zusaetzlich:
           --enable-gpl --enable-libx264 --enable-libx265
+
+    KEIN AMF/NVENC/NVDEC: Diese Hardware-Encoder wurden entfernt, weil ihre
+    Laufzeit-Probes (LoadLibrary der x64-GPU-Runtimes nvcuda/nvEncodeAPI/amfrt)
+    in einem ARM64EC-Prozess auf Windows-on-ARM die Codec-/Device-Enumeration
+    minutenlang blockieren (Resolve haengt auf "Checking licenses"). WoA-
+    Geraete haben in der Regel keine passende Discrete-GPU.
 #>
 
 Set-StrictMode -Version Latest
@@ -49,9 +53,9 @@ function Get-ConfigureFlags {
 
     .OUTPUTS
         [string[]] Die Liste der `configure`-Flags. Enthaelt immer
-        `--enable-shared --disable-static` sowie `--enable-amf`,
-        `--enable-nvenc`, `--enable-nvdec`. Die GPL-Flags erscheinen NUR bei
-        -Variant gpl.
+        `--enable-shared --disable-static`. KEINE Hardware-Encoder
+        (kein --enable-amf/--enable-nvenc/--enable-nvdec). Die GPL-Flags
+        erscheinen NUR bei -Variant gpl.
 
     .EXAMPLE
         Get-ConfigureFlags -Arch arm64
@@ -73,7 +77,7 @@ function Get-ConfigureFlags {
     $archKey = $Arch.ToLowerInvariant()
     $variantKey = $Variant.ToLowerInvariant()
 
-    # Flags (LGPL, Shared, HW-Encoder AMF+NVENC/NVDEC). Reihenfolge deterministisch.
+    # Flags (Shared, OHNE Hardware-Encoder). Reihenfolge deterministisch.
     $flags = [System.Collections.Generic.List[string]]::new()
     $flags.Add('--toolchain=msvc')
     $flags.Add('--target-os=win32')
@@ -116,10 +120,13 @@ function Get-ConfigureFlags {
         $flags.Add('--extra-ldflags=-machine:arm64ec')
     }
 
-    # Hardware-Encoder (beide Varianten; header-only SDK-Integrationen).
-    $flags.Add('--enable-amf')       # AMD AMF (AMF-Header)
-    $flags.Add('--enable-nvenc')     # NVIDIA NVENC (nv-codec-headers)
-    $flags.Add('--enable-nvdec')     # NVIDIA NVDEC (nv-codec-headers)
+    # Keine Hardware-Encoder: AMF/NVENC/NVDEC wurden bewusst ENTFERNT. Auf
+    # Windows-on-ARM (ARM64EC-Hosts) laden diese Pfade zur Laufzeit die x64-
+    # GPU-Runtimes (nvcuda/nvEncodeAPI/amfrt) ueber die Emulation und blockieren
+    # die Codec-/Device-Enumeration beim Plugin-Init minutenlang (z. B. Resolve
+    # haengt auf "Checking licenses"). Die typischen WoA-Geraete haben ohnehin
+    # keine NVIDIA/AMD-Discrete-GPU. Es bleiben die Software- (und im GPL-Build
+    # x264/x265-) Encoder.
 
     # Nur GPL: externe Encoder x264/x265 (statisch von build-deps.ps1 gebaut).
     if ($variantKey -eq 'gpl') {
