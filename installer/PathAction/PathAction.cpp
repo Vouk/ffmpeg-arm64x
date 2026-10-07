@@ -204,6 +204,20 @@ void BroadcastEnvironmentChange() {
 // --- CustomActionData-Zugriff -------------------------------------------
 
 // Liest die CustomActionData-Property der laufenden (deferred) Custom Action.
+// Entfernt abschliessende Backslashes/Schraegstriche vom BINPATH. [INSTALLDIR]
+// loest in MSI stets MIT abschliessendem '\' auf (z. B.
+// "C:\Program Files\FFmpeg 8\"). Ohne Trimmen landete dieser Backslash
+// woertlich im PATH-Eintrag. Gross-/Kleinschreibung bleibt erhalten (anders
+// als bei pathaction::Normalize, das zusaetzlich lowercased und nur fuer den
+// Vergleich gedacht ist).
+std::wstring TrimTrailingSeparators(const std::wstring& value) {
+    std::wstring result = value;
+    while (!result.empty() && (result.back() == L'\\' || result.back() == L'/')) {
+        result.pop_back();
+    }
+    return result;
+}
+
 std::wstring GetCustomActionData(MSIHANDLE install) {
     DWORD size = 0;
     // Erst die benoetigte Groesse ermitteln.
@@ -245,6 +259,10 @@ __declspec(dllexport) UINT __stdcall PathPrependDeferred(MSIHANDLE hInstall) {
     } else {
         bin_path_w = data.substr(0, sep);
     }
+
+    // Abschliessenden Backslash aus [INSTALLDIR] entfernen, damit der PATH-
+    // Eintrag ohne Trailing-Slash gesetzt wird.
+    bin_path_w = TrimTrailingSeparators(bin_path_w);
 
     if (bin_path_w.empty()) {
         LogError(hInstall, L"BINPATH ist leer; PATH bleibt unveraendert.");
@@ -342,6 +360,11 @@ __declspec(dllexport) UINT __stdcall PathRemoveDeferred(MSIHANDLE hInstall) {
     if (sep != std::wstring::npos) {
         bin_path_w = data.substr(0, sep);
     }
+
+    // Konsistent zu PathPrependDeferred: Trailing-Slash entfernen. Der
+    // Vergleich in pathaction::Remove normalisiert ohnehin, aber so bleibt das
+    // Verhalten symmetrisch und robust gegen eventuelle Altwerte.
+    bin_path_w = TrimTrailingSeparators(bin_path_w);
 
     if (bin_path_w.empty()) {
         LogError(hInstall, L"BINPATH ist leer; PATH bleibt unveraendert.");

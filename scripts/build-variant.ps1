@@ -113,7 +113,7 @@ $ffmpegFilesWxs = Join-Path $work 'FfmpegFiles.wxs'
 $outMsi = Join-Path $DistDir ("ffmpeg-$ProductVersion-$variant-arm64x.msi")
 
 Invoke-Checked -What 'heat harvest' -Action {
-    & $heat dir $arm64xBin -cg FfmpegFiles -dr BINDIR -srd -sfrag `
+    & $heat dir $arm64xBin -cg FfmpegFiles -dr INSTALLDIR -srd -sfrag `
         -var var.BinSourceDir -gg -scom -sreg -out $ffmpegFilesWxs
 }
 Invoke-Checked -What 'candle' -Action {

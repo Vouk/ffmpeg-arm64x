@@ -100,13 +100,17 @@
          der Nutzer die Lizenz aktiv akzeptiert. (Kein Property setzen = Default
          "nicht akzeptiert".) -->
 
-    <!-- BINPATH = [INSTALLDIR]\bin (R10.1). Als Type-51-CustomAction gesetzt
-         (Property == Action-Id) und explizit in der InstallExecuteSequence
-         nach CostFinalize eingereiht (siehe unten). Die PATH-Nutzlast-Actions
-         erhalten [BINPATH] ueber ihre CustomActionData. Explizit statt
-         <SetProperty>, damit die Referenzen After="BINPATH" sauber linken
-         (sonst LGHT0094: Unresolved reference WixAction:.../BINPATH). -->
-    <CustomAction Id="BINPATH" Property="BINPATH" Value="[INSTALLDIR]bin" Execute="immediate" />
+    <!-- BINPATH = [INSTALLDIR] (R10.1). Die Dateien liegen direkt im
+         Installationsverzeichnis (kein bin-Unterordner), daher ist der an PATH
+         vorangestellte Pfad das INSTALLDIR selbst. Als Type-51-CustomAction
+         gesetzt (Property == Action-Id) und explizit in der
+         InstallExecuteSequence nach CostFinalize eingereiht (siehe unten). Die
+         PATH-Nutzlast-Actions erhalten [BINPATH] ueber ihre CustomActionData.
+         [INSTALLDIR] endet bereits auf '\'; diesen abschliessenden Backslash
+         entfernt die PATH-DLL (TrimTrailingSeparators), bevor sie den Eintrag
+         setzt bzw. vergleicht. Explizit statt <SetProperty>, damit die
+         Referenzen After="BINPATH" sauber linken (sonst LGHT0094). -->
+    <CustomAction Id="BINPATH" Property="BINPATH" Value="[INSTALLDIR]" Execute="immediate" />
 
     <!-- Kein Aendern-Eintrag in der Systemsteuerung. ARPNOMODIFY wird bereits
          von WixUI_InstallDir definiert; eine eigene Definition hier erzeugt
@@ -115,19 +119,17 @@
     <!--
       ======================================================================
       Feature + Verzeichnisbaum. INSTALLDIR-Default C:\Program Files\FFmpeg 8
-      (R9.1); Unterordner bin nimmt alle DLLs und Ausfuehrbaren auf (R3.4).
+      (R9.1). Alle DLLs und Ausfuehrbaren liegen DIREKT in INSTALLDIR -- es gibt
+      KEINEN bin-Unterordner mehr. INSTALLDIR selbst ist der Bin_Path, der an
+      PATH vorangestellt wird (R10.1).
       ======================================================================
     -->
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
         <!-- "FFmpeg 8" ergibt zusammen mit ProgramFiles64Folder den Default
-             C:\Program Files\FFmpeg 8 (R9.1). -->
-        <Directory Id="INSTALLDIR" Name="FFmpeg 8">
-          <!-- Alle erzeugten DLLs und .exe landen im bin-Unterordner (R3.4).
-               Dieses Verzeichnis ist der Bin_Path, der an PATH vorangestellt
-               wird (R10.1). -->
-          <Directory Id="BINDIR" Name="bin" />
-        </Directory>
+             C:\Program Files\FFmpeg 8 (R9.1). Zielverzeichnis des Harvests
+             (heat -dr INSTALLDIR) und der PATH-Komponente. -->
+        <Directory Id="INSTALLDIR" Name="FFmpeg 8" />
       </Directory>
     </Directory>
 
@@ -143,11 +145,12 @@
         Merge-Ergebnis ab). Deshalb wird die Gruppe NICHT hier statisch
         gepflegt, sondern von der CI-Paketierung erzeugt:
 
-          heat.exe dir <bin-Ausgabeordner> -cg FfmpegFiles -dr BINDIR \
+          heat.exe dir <bin-Ausgabeordner> -cg FfmpegFiles -dr INSTALLDIR \
                    -srd -sfrag -var var.BinSourceDir -gg -out FfmpegFiles.wxs
 
-        heat harvestet alle Dateien des bin-Ordners in die ComponentGroup
-        "FfmpegFiles" mit Zielverzeichnis BINDIR. Die erzeugte FfmpegFiles.wxs
+        heat harvestet alle Dateien des Ausgabeordners in die ComponentGroup
+        "FfmpegFiles" mit Zielverzeichnis INSTALLDIR (die Dateien liegen somit
+        direkt im Installationsverzeichnis, ohne bin-Unterordner). Die erzeugte FfmpegFiles.wxs
         wird zusammen mit dieser Product.wxs kompiliert und gelinkt. Der
         ComponentGroupRef unten bindet sie in das Feature ein (R3.4).
       -->
@@ -279,13 +282,13 @@
     ========================================================================
     Fragment: PATH-Marker-Komponente.
 
-    Traegt keine Nutzdaten, dient nur als KeyPath-Anker im BINDIR, damit die
+    Traegt keine Nutzdaten, dient nur als KeyPath-Anker im INSTALLDIR, damit die
     deferred PATH-Actions verlaesslich an Install (NOT Installed) und
-    Uninstall (REMOVE="ALL") gebunden sind und BINDIR angelegt/entfernt wird.
+    Uninstall (REMOVE="ALL") gebunden sind und INSTALLDIR angelegt/entfernt wird.
     ========================================================================
   -->
   <Fragment>
-    <DirectoryRef Id="BINDIR">
+    <DirectoryRef Id="INSTALLDIR">
       <Component Id="PathEnvMarker" Guid="C1D2E3F4-5A6B-4C7D-8E9F-0A1B2C3D4E5F">
         <RegistryValue Root="HKLM"
                        Key="SOFTWARE\ARM64X-FFmpeg-Build\$(var.Variant)"
@@ -293,9 +296,9 @@
                        Type="integer"
                        Value="1"
                        KeyPath="yes" />
-        <!-- Sorgt dafuer, dass der leere bin-Ordner bei Deinstallation
+        <!-- Sorgt dafuer, dass das Installationsverzeichnis bei Deinstallation
              wieder entfernt wird, wenn keine geharvesteten Dateien mehr da sind. -->
-        <RemoveFolder Id="RemoveBinDir" On="uninstall" />
+        <RemoveFolder Id="RemoveInstallDir" On="uninstall" />
       </Component>
     </DirectoryRef>
   </Fragment>
