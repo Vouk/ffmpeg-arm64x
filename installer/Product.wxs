@@ -119,7 +119,7 @@
     <!--
       ======================================================================
       Feature + Verzeichnisbaum. INSTALLDIR-Default C:\Program Files\FFmpeg 8
-      (R9.1). Alle DLLs und Ausfuehrbaren liegen DIREKT in INSTALLDIR -- es gibt
+      (R9.1). Alle DLLs und Ausfuehrbaren liegen DIREKT in INSTALLDIR; es gibt
       KEINEN bin-Unterordner mehr. INSTALLDIR selbst ist der Bin_Path, der an
       PATH vorangestellt wird (R10.1).
       ======================================================================
