@@ -151,6 +151,57 @@ function Test-IsSystemImportLib {
     return ($script:SystemImportLibNames -contains $base)
 }
 
+# Dateiendungen, die der Installer tatsaechlich braucht: die gemergten
+# Laufzeit-DLLs und die CLI-Tools. Alles andere im bin-Ordner sind
+# Link-/Debug-Artefakte (Import-Libs .lib, Export-Dateien .exp, Symbole .pdb),
+# die ein Endnutzer zum AUSFUEHREN von FFmpeg nicht braucht.
+$script:RuntimeExtensions = @('.dll', '.exe')
+
+function Select-UnneededArtifact {
+    <#
+    .SYNOPSIS
+        Reine Logik: filtert aus einer Dateinamensliste die NICHT-Laufzeit-
+        Artefakte heraus (alles ausser .dll/.exe). Case-insensitiv.
+    .DESCRIPTION
+        Dient dem Aufraeumen des bin-Ordners vor dem MSI-Harvest. Behaelt wird
+        nur, was zum Ausfuehren noetig ist (DLLs + ffmpeg/ffprobe.exe); .lib,
+        .exp und .pdb werden als unnoetig gemeldet. Seiteneffektfrei und lokal
+        testbar; der Aufrufer loescht die zurueckgegebenen Namen.
+    .OUTPUTS
+        [string[]] die Teilmenge von -Name, die entfernt werden soll.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]] $Name)
+
+    $drop = [System.Collections.Generic.List[string]]::new()
+    foreach ($n in $Name) {
+        if ([string]::IsNullOrWhiteSpace($n)) { continue }
+        $ext = [System.IO.Path]::GetExtension($n).ToLowerInvariant()
+        if ($script:RuntimeExtensions -notcontains $ext) { $drop.Add($n) }
+    }
+    return , ([string[]]$drop.ToArray())
+}
+
+function Remove-NonRuntimeArtifact {
+    <#
+    .SYNOPSIS
+        Loescht aus einem Verzeichnis alle Nicht-Laufzeit-Artefakte (behaelt
+        .dll/.exe). Nutzt Select-UnneededArtifact fuer die Auswahl.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string] $Directory)
+    if (-not (Test-Path -LiteralPath $Directory)) { return }
+    $files = @(Get-ChildItem -LiteralPath $Directory -File | Select-Object -ExpandProperty Name)
+    $drop = Select-UnneededArtifact -Name $files
+    foreach ($n in $drop) {
+        $p = Join-Path $Directory $n
+        Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+        Write-Host "Entfernt (kein Laufzeit-Artefakt): $n"
+    }
+    Write-Host ("bin-Ordner bereinigt: {0} Datei(en) entfernt, nur .dll/.exe behalten." -f $drop.Count)
+}
+
 function Resolve-LibKey {
     <#
     .SYNOPSIS
@@ -322,6 +373,12 @@ if ($MyInvocation.InvocationName -ne '.') {
             Write-Host "WARN: $exe in keinem Suchort gefunden: $($searchRoots -join ', ')"
         }
     }
+
+    # bin-Ordner vor dem MSI-Harvest bereinigen: der Link erzeugt je DLL auch
+    # eine Import-Lib (.lib) und eine Export-Datei (.exp), '-debug' zusaetzlich
+    # Symbole (.pdb). Keines davon braucht der Endnutzer zum Ausfuehren; nur die
+    # gemergten DLLs und ffmpeg/ffprobe.exe werden ins MSI geharvestet.
+    Remove-NonRuntimeArtifact -Directory $OutputDir
 
     Write-Host "MERGED ARM64X abgeschlossen: $($script:MergeOrder.Count) DLL(s) -> $OutputDir"
 }

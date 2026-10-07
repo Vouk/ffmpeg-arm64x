@@ -74,6 +74,46 @@ Describe 'Test-IsSystemImportLib' {
     }
 }
 
+Describe 'Select-UnneededArtifact (bin-Ordner-Bereinigung)' {
+    It 'behaelt .dll und .exe, verwirft .lib/.exp/.pdb' {
+        $files = @(
+            'avcodec-62.dll','avutil-60.dll','ffmpeg.exe','ffprobe.exe',
+            'avcodec-62.lib','avcodec.lib','avcodec-62.exp','avcodec-62.pdb'
+        )
+        $drop = Select-UnneededArtifact -Name $files
+        $drop | Should -Contain 'avcodec-62.lib'
+        $drop | Should -Contain 'avcodec.lib'
+        $drop | Should -Contain 'avcodec-62.exp'
+        $drop | Should -Contain 'avcodec-62.pdb'
+        $drop | Should -Not -Contain 'avcodec-62.dll'
+        $drop | Should -Not -Contain 'ffmpeg.exe'
+        $drop.Count | Should -Be 4
+    }
+    It 'ist case-insensitiv bei der Endung' {
+        $drop = Select-UnneededArtifact -Name @('AVUTIL-60.DLL','TOOL.EXE','x.LIB')
+        $drop | Should -Be @('x.LIB')
+    }
+    It 'liefert eine leere Menge, wenn nur Laufzeitdateien vorliegen' {
+        (Select-UnneededArtifact -Name @('a.dll','b.exe')).Count | Should -Be 0
+    }
+    It 'kommt mit leerer Eingabe klar' {
+        (Select-UnneededArtifact -Name @()).Count | Should -Be 0
+    }
+}
+
+Describe 'Remove-NonRuntimeArtifact (loescht nur Nicht-Laufzeit-Dateien)' {
+    It 'entfernt .lib/.exp/.pdb und behaelt .dll/.exe im Verzeichnis' {
+        $dir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        foreach ($n in @('avcodec-62.dll','ffmpeg.exe','avcodec-62.lib','avcodec.lib','avcodec-62.exp','avcodec-62.pdb')) {
+            Set-Content -LiteralPath (Join-Path $dir $n) -Value 'x'
+        }
+        Remove-NonRuntimeArtifact -Directory $dir 6>$null
+        $left = @(Get-ChildItem -LiteralPath $dir -File | Select-Object -ExpandProperty Name | Sort-Object)
+        $left | Should -Be @('avcodec-62.dll','ffmpeg.exe')
+    }
+}
+
 Describe 'Convert-StemFromKey' {
     It 'entfernt die Versionsnummer' {
         Convert-StemFromKey -Key 'avcodec-62' | Should -Be 'avcodec'
