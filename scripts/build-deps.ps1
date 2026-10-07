@@ -104,7 +104,10 @@ function Invoke-X264Build {
 
     $ecFlags = if ($Arch -eq 'arm64ec') { ' --extra-cflags=-arm64EC --extra-ldflags=-MACHINE:arm64EC' } else { '' }
     # Statisch + statische CRT (/MT), reiner C-Pfad (--disable-asm), kein CLI.
-    $configure = "CC=cl ./configure --prefix='$prefixPosix' --enable-static --disable-shared --disable-cli " +
+    # x264 ist per Default static-only; ein DLL entstuende nur mit
+    # --enable-shared. Es gibt KEIN --disable-shared (configure meldet sonst
+    # "Unknown option --disable-shared, ignored"), daher weggelassen.
+    $configure = "CC=cl ./configure --prefix='$prefixPosix' --enable-static --disable-cli " +
                  "--host=aarch64-w64-mingw32 --disable-asm --extra-cflags=-MT" + $ecFlags
     & $Msys2Bash -lc "cd '$srcPosix' && $configure" 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) {
