@@ -94,12 +94,11 @@
     <!-- INSTALLDIR-Default (R9.1). Wird von der UI editierbar gemacht. -->
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
 
-    <!-- Lizenzseite NICHT als Zustimmungs-Gate: LicenseAccepted ist per
-         Default bereits "1", sodass der "Ich stimme zu"-Radiobutton
-         vorausgewaehlt und "Weiter" von Anfang an aktiv ist. Der Lizenztext
-         wird weiterhin angezeigt (informativ), erfordert aber keine aktive
-         Bestaetigung mehr. -->
-    <Property Id="LicenseAccepted" Value="1" />
+    <!-- Lizenzseite ALS Zustimmungs-Gate: LicenseAccepted wird BEWUSST NICHT
+         vorbelegt. In WixUI_InstallDir ist der "Ich stimme zu"-Radiobutton
+         damit anfangs NICHT ausgewaehlt und "Weiter" bleibt deaktiviert, bis
+         der Nutzer die Lizenz aktiv akzeptiert. (Kein Property setzen = Default
+         "nicht akzeptiert".) -->
 
     <!-- BINPATH = [INSTALLDIR]\bin (R10.1). Als Type-51-CustomAction gesetzt
          (Property == Action-Id) und explizit in der InstallExecuteSequence
@@ -265,10 +264,10 @@
     <!--
       ======================================================================
       Lizenz-UI. WixUI_InstallDir zeigt die Lizenzseite VOR InstallFiles.
-      Die Zustimmung ist jedoch NICHT mehr erzwungen: LicenseAccepted ist per
-      Default "1" (siehe oben), daher ist "Weiter" sofort aktiv und der Nutzer
-      muss die Lizenz nicht aktiv bestaetigen. Der Lizenztext bleibt sichtbar
-      (informativ). WixUILicenseRtf waehlt die variantenspezifische RTF.
+      Die Zustimmung IST erzwungen: LicenseAccepted wird nicht vorbelegt, daher
+      startet der "Ich stimme zu"-Radiobutton nicht ausgewaehlt und "Weiter"
+      ist deaktiviert, bis der Nutzer die Lizenz aktiv akzeptiert.
+      WixUILicenseRtf waehlt die variantenspezifische RTF.
       ======================================================================
     -->
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
