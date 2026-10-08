@@ -4,14 +4,12 @@
     config.h/config_components.h.
 
 .DESCRIPTION
-    Gebaut werden LGPL und GPL als Shared Libraries, beide OHNE Hardware-
-    Encoder (kein AMF/NVENC/NVDEC). Diese Pruefung stellt sicher, dass der Build:
-      * im LGPL-Fall KEINE GPL-Encoder (libx264/libx265) enthaelt bzw. im GPL-
-        Fall libx264/libx265 WIRKLICH enthaelt, und
-      * KEINE Hardware-Encoder (AMF/NVENC) und KEINE NVIDIA-Hardware-
-        Beschleunigung (CUDA/NVDEC/ffnvcodec) enthaelt -- diese wurden entfernt,
-        weil ihre Laufzeit-Probes einen ARM64EC-Host (Windows-on-ARM) beim
-        Plugin-Init minutenlang blockieren.
+    Es wird ausschliesslich die LGPL-Variante gebaut, als Shared Libraries, OHNE
+    GPL-Encoder (libx264/libx265), aber MIT den Hardware-Encodern AMF (AMD) und
+    NVENC/NVDEC (NVIDIA). Diese Pruefung stellt sicher, dass der Build:
+      * KEINE GPL-Encoder (libx264/libx265) enthaelt, und
+      * die Hardware-Encoder AMF + NVENC sowie die NVIDIA-Hardware-
+        Beschleunigung (CUDA/NVDEC) WIRKLICH enthaelt.
 
     Da ARM64-ffmpeg.exe auf dem x64-Runner NICHT ausfuehrbar ist, erfolgt die
     Pruefung STATISCH aus den von configure erzeugten Headern config.h und
@@ -46,7 +44,7 @@ param(
     [string] $ConfigPath,
 
     # Lizenz-Variante: 'lgpl' (Default) verbietet libx264/libx265; 'gpl'
-    # verlangt sie. Beide verbieten AMF/NVENC/NVDEC (entfernt).
+    # verlangt sie. Beide verlangen AMF + NVENC/NVDEC.
     [Parameter()]
     [ValidateSet('lgpl', 'gpl', IgnoreCase = $true)]
     [string] $Variant = 'lgpl'
@@ -102,8 +100,8 @@ function Test-FFmpegConfigCapabilities {
             vorhanden sein.
           * GPL : CONFIG_LIBX264_ENCODER UND CONFIG_LIBX265_ENCODER MUESSEN
             vorhanden sein.
-          * beide: KEIN *_AMF_ENCODER, KEIN *_NVENC_ENCODER und kein
-            CONFIG_CUDA/CONFIG_NVDEC/CONFIG_FFNVCODEC (HW-Encoder entfernt).
+          * beide: mind. ein *_AMF_ENCODER (z. B. h264_amf), mind. ein
+            *_NVENC_ENCODER (z. B. h264_nvenc) und CONFIG_CUDA/CONFIG_NVDEC.
     .OUTPUTS
         PSCustomObject (Success, Variant, Violations, Message).
     #>
@@ -131,26 +129,24 @@ function Test-FFmpegConfigCapabilities {
         if ($hasX265) { $violations.Add("Unerwarteter GPL-Encoder 'libx265' im LGPL-Build.") }
     }
 
-    # --- Hardware-Encoder: AUSDRUECKLICH VERBOTEN (beide Varianten) ---------
-    # AMF/NVENC/NVDEC wurden aus dem Build entfernt (ARM64EC-Haenger auf WoA).
-    # Taucht trotzdem ein solcher Schalter in config.h auf, ist versehentlich
-    # wieder HW-Encoding aktiviert -> Verstoss.
+    # --- Hardware-Encoder MUESSEN vorhanden sein (beide Varianten) ----------
     $amf = @($flagItems | Where-Object { $_ -match '(?i)_amf_encoder$' })
-    if ($amf.Count -gt 0) {
-        $violations.Add("Unerwartete AMF-Hardware-Encoder in config.h (AMF wurde entfernt): " + ($amf -join ', '))
+    if ($amf.Count -eq 0) {
+        $violations.Add("Fehlende AMF-Hardware-Encoder in config.h (erwartet z. B. 'h264_amf').")
     }
     $nvenc = @($flagItems | Where-Object { $_ -match '(?i)_nvenc_encoder$' })
-    if ($nvenc.Count -gt 0) {
-        $violations.Add("Unerwartete NVENC-Hardware-Encoder in config.h (NVENC wurde entfernt): " + ($nvenc -join ', '))
+    if ($nvenc.Count -eq 0) {
+        $violations.Add("Fehlende NVENC-Hardware-Encoder in config.h (erwartet z. B. 'h264_nvenc').")
     }
-    if ($flags.Contains('cuda') -or $flags.Contains('nvdec') -or $flags.Contains('cuvid') -or $flags.Contains('ffnvcodec')) {
-        $violations.Add("Unerwartete NVDEC/CUDA/ffnvcodec-Hardware-Beschleunigung in config.h (NVIDIA-Stack wurde entfernt).")
+    $hasNvdec = $flags.Contains('cuda') -or $flags.Contains('nvdec') -or $flags.Contains('cuvid')
+    if (-not $hasNvdec) {
+        $violations.Add("Fehlende NVDEC/CUDA-Hardware-Beschleunigung in config.h (erwartet CONFIG_CUDA/CONFIG_NVDEC).")
     }
 
     $success = ($violations.Count -eq 0)
     $message = if ($success) {
-        "Statische Faehigkeitspruefung (config.h) bestanden: $variantKey-Build ohne Hardware-Encoder" +
-        $(if ($variantKey -eq 'gpl') { ', mit libx264/libx265.' } else { ', ohne GPL-Encoder.' })
+        "Statische Faehigkeitspruefung (config.h) bestanden: $variantKey-Build mit AMF + NVENC/NVDEC" +
+        $(if ($variantKey -eq 'gpl') { ' und libx264/libx265.' } else { ', ohne GPL-Encoder.' })
     } else {
         "Statische Faehigkeitspruefung (config.h, $variantKey) fehlgeschlagen: " + ($violations -join ' ')
     }

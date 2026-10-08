@@ -16,7 +16,7 @@
       2. build-ffmpeg.ps1 -Arch arm64ec (eigener Quellbaum, LinkReproDir)
       3. merge-arm64x-merged.ps1  -> 7 Single-File-ARM64X-DLLs + Tools
       4. verify-arm64x-merged.ps1 -> Header/Hybrid/Export-Paritaet
-      5. verify-capabilities.ps1  -> je Variante x264/x265; keine HW-Encoder
+      5. verify-capabilities.ps1  -> je Variante x264/x265 + AMF/NVENC/NVDEC
       6. candle/light             -> eine MSI (ffmpeg-<ver>-<variant>-arm64x.msi)
 
 .PARAMETER Variant            'lgpl' oder 'gpl'.
@@ -24,6 +24,7 @@
 .PARAMETER Arm64ecSourceDir   FFmpeg-Quellbaum fuer die arm64ec-Ansicht.
 .PARAMETER OutputDir          Arbeits-/Ausgabewurzel dieser Variante.
 .PARAMETER LinkReproDir       Kurzer Pfad fuer die rsp-Dateien dieser Variante.
+.PARAMETER HwHeadersDir       AMF/nv-codec-Header-Prefix.
 .PARAMETER DepsDir            (gpl) Wurzel der statischen x264/x265-Libs.
 .PARAMETER DistDir            Zielordner fuer die MSI.
 .PARAMETER ProductVersion     Anzeigeversion (MSI-Dateiname + candle -dProductVersion).
@@ -37,6 +38,7 @@ param(
     [Parameter(Mandatory)][string] $Arm64ecSourceDir,
     [Parameter(Mandatory)][string] $OutputDir,
     [Parameter(Mandatory)][string] $LinkReproDir,
+    [Parameter(Mandatory)][string] $HwHeadersDir,
     [Parameter()][string] $DepsDir,
     [Parameter(Mandatory)][string] $DistDir,
     [Parameter(Mandatory)][string] $ProductVersion,
@@ -69,12 +71,12 @@ if ($variant -eq 'gpl') {
 Invoke-Checked -What 'Build arm64' -Action {
     & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scriptDir 'build-ffmpeg.ps1') `
         -Arch arm64 -Variant $variant -SourceDir $Arm64SourceDir -OutputDir $ffOut `
-        -LinkReproDir $LinkReproDir @depsArg
+        -HwHeadersDir $HwHeadersDir -LinkReproDir $LinkReproDir @depsArg
 }
 Invoke-Checked -What 'Build arm64ec' -Action {
     & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scriptDir 'build-ffmpeg.ps1') `
         -Arch arm64ec -Variant $variant -SourceDir $Arm64ecSourceDir -OutputDir $ffOut `
-        -LinkReproDir $LinkReproDir @depsArg
+        -HwHeadersDir $HwHeadersDir -LinkReproDir $LinkReproDir @depsArg
 }
 
 # --- 3: True-Merge der 7 Kern-DLLs ------------------------------------------

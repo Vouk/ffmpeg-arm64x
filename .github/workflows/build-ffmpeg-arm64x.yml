@@ -5,11 +5,10 @@
 #  (je Bibliothek EIN File mit ARM64- UND ARM64EC-Code, KEINE Forwarder) in
 #  ZWEI Varianten und erzeugt daraus genau ZWEI MSI-Installer:
 #
-#    * LGPL : Shared Libraries, OHNE GPL-Encoder, OHNE Hardware-Encoder.
-#    * GPL  : zusaetzlich die statisch eingelinkten Encoder x264 + x265.
-#
-#  KEINE Hardware-Encoder (AMF/NVENC/NVDEC) mehr: ihre Laufzeit-Probes
-#  blockieren ARM64EC-Prozesse auf Windows-on-ARM beim Plugin-Init.
+#    * LGPL : Shared Libraries, OHNE GPL-Encoder, aber MIT den Hardware-
+#             Encodern AMF und NVENC/NVDEC.
+#    * GPL  : zusaetzlich die statisch eingelinkten Encoder x264 + x265
+#             (plus dieselben Hardware-Encoder AMF + NVENC/NVDEC).
 #
 #  Der Forwarder-Pfad (scripts/merge-arm64x.ps1 + verify-arm64x.ps1) bleibt
 #  als Fallback im Repo. Der Workflow laeuft AUSSCHLIESSLICH manuell
@@ -30,9 +29,10 @@
 #  Verdrahtet die vorhandenen Bausteine:
 #    * Reinlogik-Module : scripts/lib/Version.psm1        (Test-FFmpegMajor8)
 #                         scripts/lib/ArtifactCheck.psm1  (Test-MsiCount == 2)
-#    * Build-Skripte    : scripts/build-deps.ps1    (x264/x265 static, GPL)
+#    * Build-Skripte    : scripts/install-hwheaders.ps1
+#                         scripts/build-deps.ps1    (x264/x265 static, GPL)
 #                         scripts/build-variant.ps1 (ein Variant End-to-End)
-#                           -> build-ffmpeg.ps1 (-Arch -Variant
+#                           -> build-ffmpeg.ps1 (-Arch -Variant -HwHeadersDir
 #                              -DepsDir -LinkReproDir)
 #                           -> merge-arm64x-merged.ps1
 #                           -> verify-arm64x-merged.ps1
@@ -68,6 +68,11 @@ env:
   SRC_DIR: ${{ github.workspace }}\src
   OUT_DIR: ${{ github.workspace }}\out
   DIST_DIR: ${{ github.workspace }}\dist
+  # Hardware-Encoding-Header (AMD AMF + NVIDIA nv-codec-headers). Werden
+  # geklont und ueber scripts/install-hwheaders.ps1 nach %HW_HEADERS% abgelegt.
+  AMF_HEADERS: ${{ github.workspace }}\src\AMF\amf\public\include
+  NVCODEC_HEADERS: ${{ github.workspace }}\src\nv-codec-headers\include
+  HW_HEADERS: ${{ github.workspace }}\out\hwheaders
   # Wurzel der statisch gebauten GPL-Encoder (x264/x265) je ABI.
   DEPS_DIR: ${{ github.workspace }}\out\deps\gpl
   # Kurze Basis fuer die /LINKREPROFULLPATHRSP-Dateien (MAX_PATH-Grenze der
@@ -330,7 +335,56 @@ jobs:
           }
 
       # ---------------------------------------------------------------------
-      #  6. GPL-Encoder-Quellen beziehen (x264 + x265):
+      #  6. Hardware-Encoding-Header beziehen (AMD AMF + NVIDIA nv-codec):
+      #     Beide Repos (shallow) klonen, damit --enable-amf/--enable-nvenc/
+      #     --enable-nvdec ihre Header finden. Es werden NUR Header gebraucht
+      #     (die Treiber-DLLs laedt FFmpeg zur Laufzeit). Gilt fuer BEIDE
+      #     Varianten.
+      # ---------------------------------------------------------------------
+      - name: Fetch hardware encoding headers (AMF + nv-codec)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path $env:SRC_DIR | Out-Null
+
+          function Clone-Repo {
+            param([string] $Url, [string] $Dest)
+            if (-not (Test-Path -LiteralPath $Dest)) {
+              git clone --depth=1 $Url $Dest
+              if ($LASTEXITCODE -ne 0) { Write-Error "git clone fehlgeschlagen: $Url" }
+            }
+          }
+
+          Clone-Repo 'https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git' (Join-Path $env:SRC_DIR 'AMF')
+          Clone-Repo 'https://github.com/FFmpeg/nv-codec-headers.git' (Join-Path $env:SRC_DIR 'nv-codec-headers')
+
+          # Preflight: die erwarteten Header muessen vorhanden sein.
+          foreach ($h in @(
+            @{ Kind = 'AMF';            Path = (Join-Path $env:AMF_HEADERS 'core\Version.h') },
+            @{ Kind = 'nv-codec';       Path = (Join-Path $env:NVCODEC_HEADERS 'ffnvcodec\nvEncodeAPI.h') },
+            @{ Kind = 'ffnvcodec.pc.in'; Path = (Join-Path (Split-Path -Parent $env:NVCODEC_HEADERS) 'ffnvcodec.pc.in') }
+          )) {
+            if (-not (Test-Path -LiteralPath $h.Path)) {
+              Write-Error "Hardware-Header fehlt ($($h.Kind)): '$($h.Path)'."
+            }
+          }
+          Write-Host "Hardware-Encoding-Header bereit (AMF + nv-codec)."
+
+      # ---------------------------------------------------------------------
+      #  7. Hardware-Header ablegen (install-hwheaders.ps1): AMF nach
+      #     include\AMF, ffnvcodec nach include\ffnvcodec samt generierter
+      #     ffnvcodec.pc unter lib\pkgconfig. build-ffmpeg.ps1 bekommt diesen
+      #     Pfad per -HwHeadersDir (fuer beide Varianten identisch).
+      # ---------------------------------------------------------------------
+      - name: Install hardware headers
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "${{ github.workspace }}\scripts\install-hwheaders.ps1" `
+            -AmfHeaderPath "$env:AMF_HEADERS" `
+            -NvCodecHeaderPath "$env:NVCODEC_HEADERS" `
+            -OutputDir "$env:HW_HEADERS"
+
+      # ---------------------------------------------------------------------
+      #  8. GPL-Encoder-Quellen beziehen (x264 + x265):
       #     NUR fuer die GPL-Variante. x264 von VideoLAN, x265 von Multicoreware
       #     (Branch stable). Beide shallow; die .git-Metadaten werden entfernt,
       #     damit configure/cmake keine VCS-Zustaende einziehen.
@@ -437,7 +491,7 @@ jobs:
       # 12. LGPL-Variante End-to-End (build-variant.ps1): baut beide Ansichten
       #     (mit Capture), mergt die 7 Kern-DLLs zu Single-File-ARM64X,
       #     verifiziert Header/Hybrid/Export-Paritaet, prueft die Faehigkeiten
-      #     (LGPL: KEINE x264/x265, KEINE HW-Encoder) und baut die MSI
+      #     (LGPL: KEINE x264/x265, aber AMF + NVENC/NVDEC) und baut die MSI
       #     ffmpeg-<ver>-lgpl-arm64x.msi. Kein -DepsDir noetig.
       # ---------------------------------------------------------------------
       - name: Build variant LGPL (merged ARM64X + MSI)
@@ -452,6 +506,7 @@ jobs:
             -Arm64ecSourceDir "%FFMPEG_SRC_LGPL_ARM64EC%" ^
             -OutputDir "%OUT_DIR%\lgpl" ^
             -LinkReproDir "%LINKREPRO_BASE%\lgpl" ^
+            -HwHeadersDir "%HW_HEADERS%" ^
             -DistDir "%DIST_DIR%" ^
             -ProductVersion "${{ github.event.inputs.productVersion }}" ^
             -InstallerDir "%GITHUB_WORKSPACE%\installer" ^
@@ -461,7 +516,7 @@ jobs:
       # ---------------------------------------------------------------------
       # 13. GPL-Variante End-to-End (build-variant.ps1): wie LGPL, zusaetzlich
       #     -DepsDir %DEPS_DIR% (statische x264/x265 je ABI). Faehigkeitspruefung
-      #     (GPL: x264/x265 ERFORDERLICH, KEINE HW-Encoder).
+      #     (GPL: x264/x265 ERFORDERLICH, zusaetzlich AMF + NVENC/NVDEC).
       #     Ergebnis: ffmpeg-<ver>-gpl-arm64x.msi.
       # ---------------------------------------------------------------------
       - name: Build variant GPL (merged ARM64X + MSI)
@@ -476,6 +531,7 @@ jobs:
             -Arm64ecSourceDir "%FFMPEG_SRC_GPL_ARM64EC%" ^
             -OutputDir "%OUT_DIR%\gpl" ^
             -LinkReproDir "%LINKREPRO_BASE%\gpl" ^
+            -HwHeadersDir "%HW_HEADERS%" ^
             -DepsDir "%DEPS_DIR%" ^
             -DistDir "%DIST_DIR%" ^
             -ProductVersion "${{ github.event.inputs.productVersion }}" ^

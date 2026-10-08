@@ -3,10 +3,18 @@
     Backports fuer den FFmpeg-Quellbaum, die vor configure angewendet werden.
 
 .DESCRIPTION
-    FFmpeg 8.1.3 (und release/8.1) fehlt ein Upstream-Fix, der fuer einen
-    MSVC-Build der Shared Libraries nach ARM64/ARM64EC noetig ist:
+    FFmpeg 8.1.3 (und release/8.1) fehlen zwei Upstream-Fixes, die fuer einen
+    MSVC-Build der Shared Libraries nach ARM64/ARM64EC mit NVENC/NVDEC noetig
+    sind:
 
-      1. Commit 8512161c81 "configure: Pass the .objs response file to
+      1. Commit 93f653f95c "configure: enable ffnvcodec, nvenc, nvdec for
+         aarch64 Windows". configure deaktiviert ffnvcodec/cuvid/nvdec/nvenc
+         auf aarch64 fuer jedes target_os ausser linux. Mit --target-os=win32
+         bricht configure sonst ab mit:
+             ERROR: nvdec requested, but not all dependencies are satisfied:
+             ffnvcodec
+
+      2. Commit 8512161c81 "configure: Pass the .objs response file to
          makedef". Zwei Symptome derselben Ursache, der Windows-Grenze von
          32767 Zeichen pro Kommandozeile:
            - compat/windows/makedef bekam alle ~1000 Objekte von libavcodec
@@ -24,7 +32,7 @@
     Fundstelle weder auf die alte noch auf die neue Form, wird abgebrochen --
     dann hat sich der Quellbaum geaendert und der Backport muss geprueft werden.
 
-    Bezug: Shared Libraries (DLL + Import-.lib). Keine Hardware-Encoder.
+    Bezug: Shared Libraries (DLL + Import-.lib), NVENC/NVDEC.
 #>
 
 Set-StrictMode -Version Latest
@@ -60,7 +68,21 @@ function Get-FFmpegSourcePatch {
 
     $patches = @()
 
-    # (Der fruehere NVIDIA-aarch64-Patch 93f653f95c entfiel mit AMF/NVENC/NVDEC.)
+    # --- 93f653f95c: NVIDIA auf aarch64 Windows freischalten ---------------
+    $patches += [pscustomobject]@{
+        Name   = '93f653f95c: NVIDIA (ffnvcodec/nvenc/nvdec) auf aarch64 Windows'
+        File   = 'configure'
+        Before = ConvertFrom-PatchTemplate @(
+            'elif enabled_any aarch64 ppc64 && ! enabled bigendian; then',
+            '    case $target_os in',
+            '        linux)'
+        )
+        After  = ConvertFrom-PatchTemplate @(
+            'elif enabled_any aarch64 ppc64 && ! enabled bigendian; then',
+            '    case $target_os in',
+            '        linux|mingw32*|mingw64*|win32|win64)'
+        )
+    }
 
     # --- 8512161c81 (a): makedef nimmt $(SLIB_CREATE_DEF_INPUTS) ----------
     # Kommt in configure zweimal vor (mingw32- und win32-Zweig).

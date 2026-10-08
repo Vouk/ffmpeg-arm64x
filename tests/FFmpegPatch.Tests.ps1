@@ -2,10 +2,10 @@
     Tests fuer scripts/lib/FFmpegPatch.psm1.
 
     Die Fixtures sind Ausschnitte aus FFmpeg n8.1.3 (LF; Tabs in library.mak
-    als echte Tabs). Gedeckt ist der verbliebene Backport:
+    als echte Tabs). Gedeckt sind beide Backports:
+      * 93f653f95c  NVIDIA auf aarch64 Windows
       * 8512161c81  makedef bekommt die .objs-Response-Datei, und die Datei
                     wird per make-eigenem $(file ...) geschrieben
-    (Der fruehere NVIDIA-aarch64-Patch 93f653f95c entfiel mit AMF/NVENC/NVDEC.)
 #>
 
 BeforeAll {
@@ -109,10 +109,10 @@ Describe "Get-PatchedText" {
 }
 
 Describe "Invoke-FFmpegSourcePatches" {
-    It "wendet alle sechs Patches auf einen n8.1.3-Baum an" {
+    It "wendet alle sieben Patches auf einen n8.1.3-Baum an" {
         $res = Invoke-FFmpegSourcePatches -SourceDir (New-FFmpegTree)
-        $res.Count | Should -Be 6
-        @($res | Where-Object Status -eq "Patched").Count | Should -Be 6
+        $res.Count | Should -Be 7
+        @($res | Where-Object Status -eq "Patched").Count | Should -Be 7
     }
 
     It "ist idempotent" {
@@ -121,8 +121,16 @@ Describe "Invoke-FFmpegSourcePatches" {
         $before = @{}
         foreach ($f in "configure", "compat/windows/makedef", "ffbuild/library.mak") { $before[$f] = Get-Patched $root $f }
         $res = Invoke-FFmpegSourcePatches -SourceDir $root
-        @($res | Where-Object Status -eq "AlreadyPatched").Count | Should -Be 6
+        @($res | Where-Object Status -eq "AlreadyPatched").Count | Should -Be 7
         foreach ($f in $before.Keys) { Get-Patched $root $f | Should -BeExactly $before[$f] }
+    }
+
+    It "schaltet NVIDIA fuer win32 frei, ohne den x86-Zweig anzutasten" {
+        $root = New-FFmpegTree
+        Invoke-FFmpegSourcePatches -SourceDir $root | Out-Null
+        $t = Get-Patched $root "configure"
+        $t | Should -Match ([regex]::Escape("        linux|mingw32*|mingw64*|win32|win64)"))
+        ([regex]::Matches($t, [regex]::Escape("freebsd|mingw32*|mingw64*|win32|win64|linux|cygwin*)"))).Count | Should -Be 1
     }
 
     It "ersetzt OBJS in beiden SLIB_CREATE_DEF_CMD-Zweigen" {
