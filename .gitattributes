@@ -16,5 +16,7 @@
 *.yml   text eol=lf
 *.yaml  text eol=lf
 
+# FFmpeg patches must stay LF: CRLF breaks `git apply`
+*.patch text eol=lf
 # Treat license RTFs as binary to avoid EOL mangling
 *.rtf   binary

@@ -22,6 +22,7 @@ Der Build läuft vollautomatisch, aber **ausschließlich manuell ausgelöst** (`
 .github/workflows/    GitHub-Actions-Workflow (workflow_dispatch)
 scripts/              Build-, Merge- und Verifikations-Skripte (PowerShell)
 scripts/lib/          Testbare Reinlogik-Module (PowerShell)
+patches/ffmpeg/       FFmpeg-Patches je <major>.<minor> (Hap R / BC7), vom Workflow angewendet
 installer/            WiX-Installer-Definitionen (Variant-Weiche GPL|LGPL)
 installer/PathAction/ C++-Custom-Action für System-PATH-Manipulation
 installer/license/    Lizenz-RTF (GPL + LGPL), die die Installer-UI anzeigt
@@ -40,6 +41,10 @@ Zentrale Skripte:
 ## Build auslösen
 
 Der Workflow wird ausschließlich manuell über GitHub Actions (`workflow_dispatch`) gestartet und akzeptiert die Eingaben `ffmpegVersion` und `productVersion`. Ein Lauf erzeugt beide MSI (LGPL + GPL). Es gibt keine automatischen Auslöser (`push`, `pull_request`, `schedule`, `release`).
+
+### FFmpeg-Patches (Hap R)
+
+Der Schritt „Fetch FFmpeg source" wendet vor dem Kopieren in die vier Arbeitsbäume alle `patches/ffmpeg/<major>.<minor>/*.patch` (Namensreihenfolge) per `git apply` auf den Quellbaum an. Aktuell: `0001` fügt Hap R (BC7, FourCC `Hap7`; Encoder `-c:v hap -format hap_r` und Decoder) hinzu, `0002` verbessert das Multithreading des Hap-Encoders (setzt `0001` voraus). Schlägt ein Patch fehl, bricht der Build ab. Gibt es für eine Version keinen Patch-Ordner, läuft der Build mit einer Warnung ungepatcht weiter. Die Patches stammen aus `Vouk/ffmpeg` (`patches/ffmpeg/`).
 
 ## Tests
 

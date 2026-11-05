@@ -318,6 +318,38 @@ jobs:
             Write-Error "Kein 'configure'-Skript im FFmpeg-Quellbaum: '$ffmpegSrc'."
           }
 
+          # FFmpeg-Patches (Hap R / BC7): patches/ffmpeg/<major>.<minor>/*.patch
+          # werden einmal auf den Referenzbaum angewendet, BEVOR er in die vier
+          # Arbeitsbaeume kopiert wird -- so tragen alle vier Baeume (und damit
+          # beide Ansichten beider Varianten) identischen Code. Das Tarball hat
+          # kein .git; `git apply` arbeitet auch ohne Repository direkt auf dem
+          # Arbeitsverzeichnis. Die Patches sind `git format-patch`-Dateien
+          # (0001 = Hap R Encoder + Decoder, 0002 = Multithreading); 0002 setzt
+          # 0001 voraus, daher Anwendung in Namensreihenfolge. Schlaegt ein Patch
+          # fehl, bricht der Schritt ab -- kein Patch wird still uebersprungen.
+          $parts = $version.Split('.')
+          $patchDir = Join-Path '${{ github.workspace }}' ("patches/ffmpeg/{0}.{1}" -f $parts[0], $parts[1])
+          if (Test-Path -LiteralPath $patchDir) {
+            $patches = @(Get-ChildItem -LiteralPath $patchDir -Filter '*.patch' -File | Sort-Object Name)
+            if ($patches.Count -eq 0) { Write-Error "Patch-Ordner '$patchDir' enthaelt keine .patch-Dateien." }
+            foreach ($p in $patches) {
+              Write-Host "Applying: $($p.Name)"
+              # --check zuerst, damit ein Fehlschlag keinen halb gepatchten Baum hinterlaesst.
+              git -C $ffmpegSrc apply --check $p.FullName
+              if ($LASTEXITCODE -ne 0) { Write-Error "Patch '$($p.Name)' passt nicht auf FFmpeg $version (git apply --check Exit $LASTEXITCODE)." }
+              git -C $ffmpegSrc apply --whitespace=nowarn $p.FullName
+              if ($LASTEXITCODE -ne 0) { Write-Error "Anwenden von Patch '$($p.Name)' schlug fehl (git apply Exit $LASTEXITCODE)." }
+            }
+            foreach ($f in @('libavcodec/bc7.c', 'libavcodec/bc7enc.c')) {
+              if (-not (Test-Path -LiteralPath (Join-Path $ffmpegSrc $f))) {
+                Write-Error "Nach dem Patchen fehlt '$f' im FFmpeg-Quellbaum -- Hap-R-Patches nicht vollstaendig angewendet."
+              }
+            }
+            Write-Host "$($patches.Count) Patch(es) aus '$patchDir' angewendet."
+          } else {
+            Write-Warning "Kein Patch-Ordner '$patchDir' fuer FFmpeg $version -- Build OHNE Hap-R-Patches."
+          }
+
           # Vier Arbeitsbaeume: {lgpl,gpl} x {arm64,arm64ec}. Jeder Baum ist eine
           # frische Kopie des Referenzbaums, damit sich die vier configure/make-
           # Laeufe nicht gegenseitig die Objekte ueberschreiben.
